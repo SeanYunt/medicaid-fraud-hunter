@@ -4,6 +4,7 @@ from pathlib import Path
 import click
 
 from data.fetch import find_dataset
+from data.loader import find_preprocessed, preprocess
 from profiler.dossier import build_dossier
 from reports.pdf import generate_dossier_pdf
 from scanner.anomalies import scan_all
@@ -18,6 +19,16 @@ def cli():
 
 
 @cli.command()
+@click.option("--data-path", default=None, type=click.Path(exists=True),
+              help="Path to raw dataset (auto-detected if not specified)")
+def preprocess_cmd(data_path: str | None):
+    """Pre-aggregate the raw dataset into small summary files for fast scanning."""
+    filepath = Path(data_path) if data_path else find_dataset()
+    monthly_path, procedure_path = preprocess(filepath)
+    click.echo(f"\nPreprocessing complete. Run 'python cli.py scan' to analyze.")
+
+
+@cli.command()
 @click.option("--threshold", default=0.3, type=float,
               help="Minimum anomaly score to include (0.0-1.0)")
 @click.option("--data-path", default=None, type=click.Path(exists=True),
@@ -27,9 +38,19 @@ def cli():
 def scan(threshold: float, data_path: str | None, top: int):
     """Scan the dataset for suspicious providers."""
     filepath = Path(data_path) if data_path else find_dataset()
-    click.echo(f"Scanning {filepath}...")
 
-    results = scan_all(filepath, threshold=threshold)
+    # Use preprocessed files if available
+    preprocessed = find_preprocessed()
+    if preprocessed:
+        monthly_path, procedure_path = preprocessed
+        click.echo(f"Using preprocessed data from {monthly_path.parent}")
+    else:
+        monthly_path = procedure_path = None
+        click.echo(f"No preprocessed data found. Scanning raw file: {filepath}")
+        click.echo("Tip: Run 'python cli.py preprocess' first for much faster scans.")
+
+    results = scan_all(filepath, threshold=threshold,
+                       monthly_path=monthly_path, procedure_path=procedure_path)
 
     # Save full results to CSV
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

@@ -15,24 +15,53 @@ CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of rows share same paid 
 CONSISTENCY_MIN_ROWS = 30  # Minimum rows to evaluate consistency
 
 
-def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
-    """Scan the entire dataset and return providers with anomaly scores above threshold."""
-    click.echo("Loading dataset...")
-    lf = load_claims(filepath)
+def scan_all(
+    filepath: Path,
+    threshold: float = 0.3,
+    monthly_path: Path | None = None,
+    procedure_path: Path | None = None,
+) -> list[ScanResult]:
+    """Scan the dataset and return providers with anomaly scores above threshold.
+
+    If monthly_path and procedure_path are provided, uses the small preprocessed
+    files instead of reading the full raw dataset.
+    """
+    if monthly_path and procedure_path:
+        click.echo("Loading preprocessed summaries...")
+        monthly_df = pl.read_parquet(monthly_path)
+        procedure_df = pl.read_parquet(procedure_path)
+    else:
+        click.echo("Loading raw dataset (consider running 'preprocess' first)...")
+        lf = load_claims(filepath)
+        click.echo("Aggregating monthly data...")
+        monthly_df = (
+            lf.group_by(["npi", "service_month"])
+            .agg([
+                pl.col("total_claims").sum().alias("total_claims"),
+                pl.col("total_paid").sum().alias("total_paid"),
+            ])
+            .collect()
+        )
+        click.echo("Aggregating procedure data...")
+        procedure_df = (
+            lf.group_by(["npi", "total_paid"])
+            .agg(pl.len().alias("row_count"))
+            .collect()
+        )
 
     click.echo("Running anomaly detection...")
 
     # --- Volume impossibility ---
-    volume_flags = _detect_volume_impossibility(lf)
+    volume_flags = _detect_volume_impossibility(monthly_df)
 
     # --- Revenue outliers ---
-    revenue_flags = _detect_revenue_outliers(lf)
+    revenue_flags = _detect_revenue_outliers(monthly_df)
 
     # --- Billing spikes ---
-    spike_flags = _detect_billing_spikes(lf)
+    spike_flags = _detect_billing_spikes(monthly_df)
 
     # --- Suspicious consistency ---
-    consistency_flags = _detect_suspicious_consistency(lf)
+    consistency_flags = _detect_suspicious_consistency(procedure_df)
 
     # Merge all flags by NPI
     all_npis = (set(volume_flags) | set(revenue_flags) | set(spike_flags)
@@ -65,19 +94,14 @@ def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
     return results
 
 
-def _detect_volume_impossibility(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
+def _detect_volume_impossibility(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with impossibly high claim counts in a single month."""
-    monthly_counts = (
-        lf.group_by(["npi", "service_month"])
-        .agg(pl.col("total_claims").sum().alias("month_claims"))
-        .filter(pl.col("month_claims") > MAX_CLAIMS_PER_MONTH)
-        .collect()
-    )
+    flagged = monthly_df.filter(pl.col("total_claims") > MAX_CLAIMS_PER_MONTH)
 
     flags: dict[str, list[RedFlag]] = {}
-    for row in monthly_counts.iter_rows(named=True):
+    for row in flagged.iter_rows(named=True):
         npi = str(row["npi"])
-        count = row["month_claims"]
+        count = row["total_claims"]
         severity = min(1.0, count / (MAX_CLAIMS_PER_MONTH * 3))
         flag = RedFlag(
             flag_type=RedFlagType.VOLUME_IMPOSSIBILITY,
@@ -90,12 +114,11 @@ def _detect_volume_impossibility(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
     return flags
 
 
-def _detect_revenue_outliers(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
+def _detect_revenue_outliers(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers whose total paid amount is far above peers."""
     provider_totals = (
-        lf.group_by("npi")
+        monthly_df.group_by("npi")
         .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
-        .collect()
     )
 
     if provider_totals.is_empty():
@@ -124,52 +147,44 @@ def _detect_revenue_outliers(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
     return flags
 
 
-def _detect_billing_spikes(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
+def _detect_billing_spikes(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with sudden monthly billing spikes vs their own history."""
-    monthly = (
-        lf.group_by(["npi", "service_month"])
-        .agg(pl.col("total_paid").sum().alias("monthly_total"))
-        .collect()
-    )
-
     flags: dict[str, list[RedFlag]] = {}
 
-    for npi in monthly["npi"].unique().to_list():
-        provider_monthly = monthly.filter(pl.col("npi") == npi).sort("service_month")
+    for npi in monthly_df["npi"].unique().to_list():
+        provider_monthly = monthly_df.filter(pl.col("npi") == npi).sort("service_month")
         if len(provider_monthly) < 3:
             continue
 
-        totals = provider_monthly["monthly_total"].to_list()
+        totals = provider_monthly["total_paid"].to_list()
         avg = sum(totals) / len(totals)
         if avg == 0:
             continue
 
         for row in provider_monthly.iter_rows(named=True):
-            ratio = row["monthly_total"] / avg
+            ratio = row["total_paid"] / avg
             if ratio > SPIKE_MULTIPLIER:
                 severity = min(1.0, ratio / 10.0)
                 flag = RedFlag(
                     flag_type=RedFlagType.BILLING_SPIKE,
-                    description=f"Monthly paid ${row['monthly_total']:,.2f} in {row['service_month']} is {ratio:.1f}x their average ${avg:,.2f}",
+                    description=f"Monthly paid ${row['total_paid']:,.2f} in {row['service_month']} is {ratio:.1f}x their average ${avg:,.2f}",
                     severity=severity,
-                    evidence={"month": str(row["service_month"]), "amount": row["monthly_total"], "ratio": round(ratio, 2)},
+                    evidence={"month": str(row["service_month"]), "amount": row["total_paid"], "ratio": round(ratio, 2)},
                 )
                 flags.setdefault(str(npi), []).append(flag)
 
     return flags
 
 
-def _detect_suspicious_consistency(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
+def _detect_suspicious_consistency(procedure_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers where an unusually high fraction of rows share the same paid amount."""
-    # For each provider, find total rows and the count of the most common total_paid value
     provider_stats = (
-        lf.group_by(["npi", "total_paid"])
-        .agg(pl.len().alias("amount_count"))
-        .sort("amount_count", descending=True)
+        procedure_df
+        .sort("row_count", descending=True)
         .group_by("npi")
         .agg([
-            pl.col("amount_count").sum().alias("total_rows"),
-            pl.col("amount_count").first().alias("top_amount_count"),
+            pl.col("row_count").sum().alias("total_rows"),
+            pl.col("row_count").first().alias("top_amount_count"),
             pl.col("total_paid").first().alias("top_amount"),
         ])
         .filter(pl.col("total_rows") >= CONSISTENCY_MIN_ROWS)
@@ -177,7 +192,6 @@ def _detect_suspicious_consistency(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]
             (pl.col("top_amount_count") / pl.col("total_rows")).alias("consistency_ratio")
         )
         .filter(pl.col("consistency_ratio") > CONSISTENCY_RATIO_THRESHOLD)
-        .collect()
     )
 
     flags: dict[str, list[RedFlag]] = {}

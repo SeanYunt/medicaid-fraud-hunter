@@ -4,7 +4,10 @@ import csv
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
+
+from data.loader import load_claims
 
 
 # Provider NPIs
@@ -85,3 +88,28 @@ def sample_csv(tmp_path: Path) -> Path:
         writer.writeheader()
         writer.writerows(rows)
     return filepath
+
+
+@pytest.fixture
+def monthly_df(sample_csv: Path) -> pl.DataFrame:
+    """Provider+month aggregation matching the preprocessed monthly file."""
+    lf = load_claims(sample_csv)
+    return (
+        lf.group_by(["npi", "service_month"])
+        .agg([
+            pl.col("total_claims").sum().alias("total_claims"),
+            pl.col("total_paid").sum().alias("total_paid"),
+        ])
+        .collect()
+    )
+
+
+@pytest.fixture
+def procedure_df(sample_csv: Path) -> pl.DataFrame:
+    """Provider+paid_amount aggregation matching the preprocessed procedure file."""
+    lf = load_claims(sample_csv)
+    return (
+        lf.group_by(["npi", "total_paid"])
+        .agg(pl.len().alias("row_count"))
+        .collect()
+    )

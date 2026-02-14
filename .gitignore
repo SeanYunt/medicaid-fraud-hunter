@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 venv/
 data/raw/
+data/processed/
 output/
 *.egg-info/
 dist/

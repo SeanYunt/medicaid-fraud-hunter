@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from data.loader import load_claims
+import polars as pl
+
 from data.models import RedFlagType
 from scanner.anomalies import (
     _detect_volume_impossibility,
@@ -20,55 +21,47 @@ from tests.conftest import (
 )
 
 
-def test_volume_impossibility_flags_volume_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_volume_impossibility(lf)
+def test_volume_impossibility_flags_volume_provider(monthly_df: pl.DataFrame):
+    flags = _detect_volume_impossibility(monthly_df)
     assert VOLUME_NPI in flags
     assert all(f.flag_type == RedFlagType.VOLUME_IMPOSSIBILITY for f in flags[VOLUME_NPI])
 
 
-def test_volume_impossibility_skips_clean_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_volume_impossibility(lf)
+def test_volume_impossibility_skips_clean_provider(monthly_df: pl.DataFrame):
+    flags = _detect_volume_impossibility(monthly_df)
     assert CLEAN_NPI not in flags
 
 
-def test_revenue_outlier_flags_revenue_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_revenue_outliers(lf)
+def test_revenue_outlier_flags_revenue_provider(monthly_df: pl.DataFrame):
+    flags = _detect_revenue_outliers(monthly_df)
     assert REVENUE_NPI in flags
     assert all(f.flag_type == RedFlagType.REVENUE_OUTLIER for f in flags[REVENUE_NPI])
 
 
-def test_revenue_outlier_skips_clean_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_revenue_outliers(lf)
+def test_revenue_outlier_skips_clean_provider(monthly_df: pl.DataFrame):
+    flags = _detect_revenue_outliers(monthly_df)
     assert CLEAN_NPI not in flags
 
 
-def test_billing_spike_flags_spike_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_billing_spikes(lf)
+def test_billing_spike_flags_spike_provider(monthly_df: pl.DataFrame):
+    flags = _detect_billing_spikes(monthly_df)
     assert SPIKE_NPI in flags
     assert all(f.flag_type == RedFlagType.BILLING_SPIKE for f in flags[SPIKE_NPI])
 
 
-def test_billing_spike_skips_clean_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_billing_spikes(lf)
+def test_billing_spike_skips_clean_provider(monthly_df: pl.DataFrame):
+    flags = _detect_billing_spikes(monthly_df)
     assert CLEAN_NPI not in flags
 
 
-def test_suspicious_consistency_flags_consistency_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_suspicious_consistency(lf)
+def test_suspicious_consistency_flags_consistency_provider(procedure_df: pl.DataFrame):
+    flags = _detect_suspicious_consistency(procedure_df)
     assert CONSISTENCY_NPI in flags
     assert all(f.flag_type == RedFlagType.SUSPICIOUS_CONSISTENCY for f in flags[CONSISTENCY_NPI])
 
 
-def test_suspicious_consistency_skips_clean_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_suspicious_consistency(lf)
+def test_suspicious_consistency_skips_clean_provider(procedure_df: pl.DataFrame):
+    flags = _detect_suspicious_consistency(procedure_df)
     assert CLEAN_NPI not in flags
 
 

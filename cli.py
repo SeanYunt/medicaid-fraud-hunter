@@ -99,6 +99,10 @@ def profile(npi: str, data_path: str | None):
     # Print summary to terminal
     click.echo(f"\n{'=' * 60}")
     click.echo(f"Provider NPI: {npi}")
+    if dossier.provider.name:
+        click.echo(f"Provider Name: {dossier.provider.name}")
+    if dossier.provider.specialty:
+        click.echo(f"Specialty: {dossier.provider.specialty}")
 
     s = dossier.claims_summary
     if s:

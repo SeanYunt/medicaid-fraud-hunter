@@ -56,8 +56,20 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
     elements.append(Paragraph("Provider Information", heading_style))
     provider = dossier.provider
     info_data = [
-        ["Billing NPI", provider.npi],
+        ["NPI", provider.npi],
     ]
+    if provider.name:
+        info_data.append(["Provider Name", provider.name])
+    if provider.specialty:
+        info_data.append(["Specialty", provider.specialty])
+    if provider.enumeration_type:
+        label = "Organization" if provider.enumeration_type == "NPI-2" else "Individual"
+        info_data.append(["Type", label])
+    if provider.address:
+        addr_parts = [provider.address]
+        if provider.city:
+            addr_parts.append(f"{provider.city}, {provider.state} {provider.zip}")
+        info_data.append(["Address", " — ".join(addr_parts)])
     if provider.billing_npi and provider.billing_npi != provider.npi:
         info_data.append(["Billing NPI", provider.billing_npi])
     if provider.servicing_npi:

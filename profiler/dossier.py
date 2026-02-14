@@ -3,6 +3,7 @@ from pathlib import Path
 import click
 import polars as pl
 
+from data.fetch import lookup_npi
 from data.loader import load_claims, load_claims_for_provider
 from data.models import Dossier, Provider, ScanResult
 
@@ -15,7 +16,23 @@ def build_dossier(filepath: Path, npi: str, scan_result: ScanResult | None = Non
     if claims.is_empty():
         raise click.ClickException(f"No claims found for NPI {npi}")
 
-    provider = Provider(npi=npi)
+    click.echo(f"Looking up NPI {npi} in NPPES registry...")
+    npi_info = lookup_npi(npi)
+    provider = Provider(
+        npi=npi,
+        name=npi_info.get("name", ""),
+        specialty=npi_info.get("specialty", ""),
+        address=npi_info.get("address", ""),
+        city=npi_info.get("city", ""),
+        state=npi_info.get("state", ""),
+        zip=npi_info.get("zip", ""),
+        enumeration_type=npi_info.get("enumeration_type", ""),
+    )
+    if provider.name:
+        click.echo(f"  Provider: {provider.name}")
+    else:
+        click.echo("  Warning: NPI not found in NPPES registry")
+
     claims_summary = _summarize_claims(claims)
     peer_comparison = _compare_to_peers(filepath, npi, claims)
     timeline = _build_timeline(claims)

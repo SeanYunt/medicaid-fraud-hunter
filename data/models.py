@@ -14,6 +14,13 @@ class RedFlagType(Enum):
 class Provider:
     """A healthcare provider identified by NPI."""
     npi: str
+    name: str = ""
+    specialty: str = ""
+    address: str = ""
+    city: str = ""
+    state: str = ""
+    zip: str = ""
+    enumeration_type: str = ""
     billing_npi: str = ""
     servicing_npi: str = ""
 

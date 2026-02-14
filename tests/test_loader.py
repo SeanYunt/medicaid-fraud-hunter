@@ -16,15 +16,16 @@ def test_load_claims_returns_lazyframe(sample_csv: Path):
 def test_load_claims_renames_columns(sample_csv: Path):
     lf = load_claims(sample_csv)
     names = lf.collect_schema().names()
-    # Should have renamed NPI -> npi, SRVC_DT -> service_date, etc.
     assert "npi" in names
-    assert "service_date" in names
-    assert "billed_amount" in names
+    assert "service_month" in names
+    assert "total_paid" in names
+    assert "procedure_code" in names
 
 
 def test_load_claims_for_provider(sample_csv: Path):
     df = load_claims_for_provider(sample_csv, CLEAN_NPI)
-    assert len(df) == 30
+    # Clean provider has 6 months * 2 procedure codes = 12 rows
+    assert len(df) == 12
     assert df["npi"].unique().to_list() == [CLEAN_NPI]
 
 
@@ -38,4 +39,5 @@ def test_get_all_providers(sample_csv: Path):
     npis = df["npi"].to_list()
     assert CLEAN_NPI in npis
     assert VOLUME_NPI in npis
-    assert len(npis) == 26  # 6 archetype providers + 20 filler providers
+    # 5 archetype providers + 20 filler providers
+    assert len(npis) == 25

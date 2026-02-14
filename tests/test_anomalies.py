@@ -8,7 +8,6 @@ from scanner.anomalies import (
     _detect_volume_impossibility,
     _detect_revenue_outliers,
     _detect_billing_spikes,
-    _detect_weekend_patterns,
     _detect_suspicious_consistency,
     scan_all,
 )
@@ -17,7 +16,6 @@ from tests.conftest import (
     VOLUME_NPI,
     REVENUE_NPI,
     SPIKE_NPI,
-    WEEKEND_NPI,
     CONSISTENCY_NPI,
 )
 
@@ -61,19 +59,6 @@ def test_billing_spike_skips_clean_provider(sample_csv: Path):
     assert CLEAN_NPI not in flags
 
 
-def test_weekend_pattern_flags_weekend_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_weekend_patterns(lf)
-    assert WEEKEND_NPI in flags
-    assert all(f.flag_type == RedFlagType.WEEKEND_AFTERHOURS for f in flags[WEEKEND_NPI])
-
-
-def test_weekend_pattern_skips_clean_provider(sample_csv: Path):
-    lf = load_claims(sample_csv)
-    flags = _detect_weekend_patterns(lf)
-    assert CLEAN_NPI not in flags
-
-
 def test_suspicious_consistency_flags_consistency_provider(sample_csv: Path):
     lf = load_claims(sample_csv)
     flags = _detect_suspicious_consistency(lf)
@@ -90,7 +75,6 @@ def test_suspicious_consistency_skips_clean_provider(sample_csv: Path):
 def test_scan_all_returns_sorted_results(sample_csv: Path):
     results = scan_all(sample_csv, threshold=0.0)
     assert len(results) > 0
-    # Should be sorted descending by score
     scores = [r.overall_score for r in results]
     assert scores == sorted(scores, reverse=True)
 

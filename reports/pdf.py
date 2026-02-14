@@ -13,7 +13,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from data.models import Dossier, RedFlagType
+from data.models import Dossier
 
 OUTPUT_DIR = Path(__file__).parent.parent / "output" / "dossiers"
 
@@ -56,11 +56,13 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
     elements.append(Paragraph("Provider Information", heading_style))
     provider = dossier.provider
     info_data = [
-        ["NPI", provider.npi],
-        ["Name", provider.name or "N/A"],
-        ["Specialty", provider.specialty or "N/A"],
-        ["Location", f"{provider.city}, {provider.state} {provider.zip_code}".strip(", ")],
+        ["Billing NPI", provider.npi],
     ]
+    if provider.billing_npi and provider.billing_npi != provider.npi:
+        info_data.append(["Billing NPI", provider.billing_npi])
+    if provider.servicing_npi:
+        info_data.append(["Servicing NPI", provider.servicing_npi])
+
     info_table = Table(info_data, colWidths=[1.5 * inch, 5 * inch])
     info_table.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
@@ -107,20 +109,14 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
 
         if "total_claims" in summary:
             summary_data.append(["Total Claims", f"{summary['total_claims']:,}"])
-        if "total_billed" in summary:
-            summary_data.append(["Total Billed", f"${summary['total_billed']:,.2f}"])
         if "total_paid" in summary:
             summary_data.append(["Total Paid", f"${summary['total_paid']:,.2f}"])
-        if "avg_billed_per_claim" in summary:
-            summary_data.append(["Avg per Claim", f"${summary['avg_billed_per_claim']:,.2f}"])
-        if "max_single_claim" in summary:
-            summary_data.append(["Max Single Claim", f"${summary['max_single_claim']:,.2f}"])
+        if "total_beneficiaries" in summary:
+            summary_data.append(["Total Beneficiaries", f"{summary['total_beneficiaries']:,}"])
         if "date_range_start" in summary:
             summary_data.append(["Date Range", f"{summary['date_range_start']} to {summary['date_range_end']}"])
-        if "max_claims_in_a_day" in summary:
-            summary_data.append(["Max Claims/Day", f"{summary['max_claims_in_a_day']}"])
-        if "avg_claims_per_active_day" in summary:
-            summary_data.append(["Avg Claims/Active Day", f"{summary['avg_claims_per_active_day']}"])
+        if "active_months" in summary:
+            summary_data.append(["Active Months", f"{summary['active_months']}"])
 
         if summary_data:
             summary_table = Table(summary_data, colWidths=[2 * inch, 4.5 * inch])
@@ -137,14 +133,16 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
         # Top procedures
         if "top_procedures" in summary and summary["top_procedures"]:
             elements.append(Paragraph("Top Procedures by Volume", heading_style))
-            proc_header = [["Procedure Code", "Count", "Total Billed"]]
+            proc_header = [["HCPCS Code", "Rows", "Claims", "Total Paid"]]
             proc_rows = [
-                [p.get("procedure_code", p.get("PROC_CD", "")),
-                 str(p.get("count", "")),
-                 f"${p.get('total_billed', 0):,.2f}"]
+                [p.get("procedure_code", ""),
+                 str(p.get("row_count", "")),
+                 str(p.get("claims", "")),
+                 f"${p.get('paid', 0):,.2f}"]
                 for p in summary["top_procedures"]
             ]
-            proc_table = Table(proc_header + proc_rows, colWidths=[2.5 * inch, 1.5 * inch, 2.5 * inch])
+            proc_table = Table(proc_header + proc_rows,
+                               colWidths=[1.5 * inch, 1.5 * inch, 1.5 * inch, 2 * inch])
             proc_table.setStyle(TableStyle([
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.95)),
@@ -158,14 +156,13 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
 
     # --- Peer Comparison ---
     if dossier.peer_comparison and "note" not in dossier.peer_comparison:
-        elements.append(Paragraph("Peer Comparison", heading_style))
+        elements.append(Paragraph("Peer Comparison (All Providers)", heading_style))
         pc = dossier.peer_comparison
         peer_data = [
-            ["Specialty", pc.get("specialty", "N/A")],
-            ["Peers in Specialty", f"{pc.get('peer_count', 'N/A'):,}"],
-            ["Provider Total Billed", f"${pc.get('provider_total_billed', 0):,.2f}"],
-            ["Peer Mean Billed", f"${pc.get('peer_mean_billed', 0):,.2f}"],
-            ["Peer Median Billed", f"${pc.get('peer_median_billed', 0):,.2f}"],
+            ["Total Providers", f"{pc.get('peer_count', 'N/A'):,}"],
+            ["Provider Total Paid", f"${pc.get('provider_total_paid', 0):,.2f}"],
+            ["Peer Mean Paid", f"${pc.get('peer_mean_paid', 0):,.2f}"],
+            ["Peer Median Paid", f"${pc.get('peer_median_paid', 0):,.2f}"],
             ["Provider Percentile", f"{pc.get('provider_percentile', 'N/A')}th"],
         ]
         if "zscore" in pc:
@@ -185,9 +182,9 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
     # --- Monthly Timeline ---
     if dossier.timeline:
         elements.append(Paragraph("Monthly Billing Timeline", heading_style))
-        timeline_header = [["Month", "Claims", "Total Billed"]]
+        timeline_header = [["Month", "Claims", "Total Paid"]]
         timeline_rows = [
-            [t["month"], str(t["claim_count"]), f"${t['total_billed']:,.2f}"]
+            [t["month"], str(t["total_claims"]), f"${t['total_paid']:,.2f}"]
             for t in dossier.timeline
         ]
         timeline_table = Table(timeline_header + timeline_rows,

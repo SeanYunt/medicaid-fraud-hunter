@@ -4,7 +4,6 @@ from pathlib import Path
 import click
 
 from data.fetch import find_dataset
-from data.loader import load_claims
 from profiler.dossier import build_dossier
 from reports.pdf import generate_dossier_pdf
 from scanner.anomalies import scan_all
@@ -22,7 +21,7 @@ def cli():
 @click.option("--threshold", default=0.3, type=float,
               help="Minimum anomaly score to include (0.0-1.0)")
 @click.option("--data-path", default=None, type=click.Path(exists=True),
-              help="Path to CSV dataset (auto-detected if not specified)")
+              help="Path to dataset (auto-detected if not specified)")
 @click.option("--top", default=50, type=int,
               help="Number of top results to display")
 def scan(threshold: float, data_path: str | None, top: int):
@@ -38,11 +37,11 @@ def scan(threshold: float, data_path: str | None, top: int):
 
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["rank", "npi", "provider_name", "score", "num_flags", "flag_types"])
+        writer.writerow(["rank", "npi", "score", "num_flags", "flag_types"])
         for i, result in enumerate(results, 1):
             flag_types = ", ".join(set(f.flag_type.value for f in result.red_flags))
             writer.writerow([
-                i, result.npi, result.provider_name,
+                i, result.npi,
                 f"{result.overall_score:.3f}", len(result.red_flags), flag_types,
             ])
 
@@ -62,7 +61,7 @@ def scan(threshold: float, data_path: str | None, top: int):
 @cli.command()
 @click.argument("npi")
 @click.option("--data-path", default=None, type=click.Path(exists=True),
-              help="Path to CSV dataset (auto-detected if not specified)")
+              help="Path to dataset (auto-detected if not specified)")
 def profile(npi: str, data_path: str | None):
     """Build an evidence dossier for a specific provider."""
     filepath = Path(data_path) if data_path else find_dataset()
@@ -78,15 +77,14 @@ def profile(npi: str, data_path: str | None):
 
     # Print summary to terminal
     click.echo(f"\n{'=' * 60}")
-    click.echo(f"Provider: {dossier.provider.name or 'N/A'} (NPI: {npi})")
-    click.echo(f"Specialty: {dossier.provider.specialty or 'N/A'}")
-    click.echo(f"Location: {dossier.provider.city}, {dossier.provider.state}")
+    click.echo(f"Provider NPI: {npi}")
 
     s = dossier.claims_summary
     if s:
-        click.echo(f"\nClaims: {s.get('total_claims', 'N/A'):,}")
-        if "total_billed" in s:
-            click.echo(f"Total Billed: ${s['total_billed']:,.2f}")
+        if "total_claims" in s:
+            click.echo(f"Total Claims: {s['total_claims']:,}")
+        if "total_paid" in s:
+            click.echo(f"Total Paid: ${s['total_paid']:,.2f}")
         if "date_range_start" in s:
             click.echo(f"Date Range: {s['date_range_start']} to {s['date_range_end']}")
 
@@ -97,7 +95,7 @@ def profile(npi: str, data_path: str | None):
 
     pc = dossier.peer_comparison
     if pc and "provider_percentile" in pc:
-        click.echo(f"\nPeer Ranking: {pc['provider_percentile']}th percentile in {pc.get('specialty', 'N/A')}")
+        click.echo(f"\nPeer Ranking: {pc['provider_percentile']}th percentile")
 
     click.echo(f"{'=' * 60}")
 
@@ -115,7 +113,7 @@ def _load_scan_result(npi: str):
             if row["npi"] == npi:
                 return ScanResult(
                     npi=npi,
-                    provider_name=row.get("provider_name", ""),
+                    provider_name="",
                     overall_score=float(row.get("score", 0)),
                 )
     return None

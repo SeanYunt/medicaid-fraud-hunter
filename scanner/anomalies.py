@@ -7,12 +7,12 @@ from data.loader import load_claims
 from data.models import RedFlag, RedFlagType, ScanResult
 
 # Thresholds — tune these based on real data
-MAX_PROCEDURES_PER_DAY = 50  # Physical impossibility threshold
+# Volume: max plausible claims per provider per month
+MAX_CLAIMS_PER_MONTH = 1500
 REVENUE_ZSCORE_THRESHOLD = 3.0  # Standard deviations above mean
 SPIKE_MULTIPLIER = 5.0  # Monthly billing spike vs provider's own average
-WEEKEND_RATIO_THRESHOLD = 0.4  # Suspicious if >40% of claims on weekends
-CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of claims share same amount
-CONSISTENCY_MIN_CLAIMS = 30  # Minimum claims to evaluate consistency
+CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of rows share same paid amount
+CONSISTENCY_MIN_ROWS = 30  # Minimum rows to evaluate consistency
 
 
 def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
@@ -21,7 +21,6 @@ def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
     lf = load_claims(filepath)
 
     click.echo("Running anomaly detection...")
-    results = []
 
     # --- Volume impossibility ---
     volume_flags = _detect_volume_impossibility(lf)
@@ -32,22 +31,19 @@ def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
     # --- Billing spikes ---
     spike_flags = _detect_billing_spikes(lf)
 
-    # --- Weekend/after-hours ---
-    weekend_flags = _detect_weekend_patterns(lf)
-
     # --- Suspicious consistency ---
     consistency_flags = _detect_suspicious_consistency(lf)
 
     # Merge all flags by NPI
     all_npis = (set(volume_flags) | set(revenue_flags) | set(spike_flags)
-                | set(weekend_flags) | set(consistency_flags))
+                | set(consistency_flags))
 
+    results = []
     for npi in all_npis:
         flags = []
         flags.extend(volume_flags.get(npi, []))
         flags.extend(revenue_flags.get(npi, []))
         flags.extend(spike_flags.get(npi, []))
-        flags.extend(weekend_flags.get(npi, []))
         flags.extend(consistency_flags.get(npi, []))
 
         if not flags:
@@ -57,7 +53,7 @@ def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
 
         result = ScanResult(
             npi=npi,
-            provider_name="",  # populated later from data
+            provider_name="",
             overall_score=overall_score,
             red_flags=flags,
         )
@@ -70,28 +66,24 @@ def scan_all(filepath: Path, threshold: float = 0.3) -> list[ScanResult]:
 
 
 def _detect_volume_impossibility(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers billing more procedures per day than physically possible."""
-    names = lf.collect_schema().names()
-    npi_col = "npi" if "npi" in names else "NPI"
-    date_col = "service_date" if "service_date" in names else "SRVC_DT"
-
-    daily_counts = (
-        lf.group_by([npi_col, date_col])
-        .agg(pl.len().alias("daily_count"))
-        .filter(pl.col("daily_count") > MAX_PROCEDURES_PER_DAY)
+    """Flag providers with impossibly high claim counts in a single month."""
+    monthly_counts = (
+        lf.group_by(["npi", "service_month"])
+        .agg(pl.col("total_claims").sum().alias("month_claims"))
+        .filter(pl.col("month_claims") > MAX_CLAIMS_PER_MONTH)
         .collect()
     )
 
     flags: dict[str, list[RedFlag]] = {}
-    for row in daily_counts.iter_rows(named=True):
-        npi = str(row[npi_col])
-        count = row["daily_count"]
-        severity = min(1.0, count / (MAX_PROCEDURES_PER_DAY * 3))
+    for row in monthly_counts.iter_rows(named=True):
+        npi = str(row["npi"])
+        count = row["month_claims"]
+        severity = min(1.0, count / (MAX_CLAIMS_PER_MONTH * 3))
         flag = RedFlag(
             flag_type=RedFlagType.VOLUME_IMPOSSIBILITY,
-            description=f"Billed {count} procedures on {row[date_col]} (max plausible: {MAX_PROCEDURES_PER_DAY})",
+            description=f"{count:,} claims in {row['service_month']} (max plausible: {MAX_CLAIMS_PER_MONTH:,})",
             severity=severity,
-            evidence={"date": str(row[date_col]), "count": count},
+            evidence={"month": str(row["service_month"]), "claims": count},
         )
         flags.setdefault(npi, []).append(flag)
 
@@ -99,37 +91,33 @@ def _detect_volume_impossibility(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
 
 
 def _detect_revenue_outliers(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers whose total billing is far above peers."""
-    names = lf.collect_schema().names()
-    npi_col = "npi" if "npi" in names else "NPI"
-    amount_col = "billed_amount" if "billed_amount" in names else "BILLED_AMT"
-
+    """Flag providers whose total paid amount is far above peers."""
     provider_totals = (
-        lf.group_by(npi_col)
-        .agg(pl.col(amount_col).sum().alias("total_billed"))
+        lf.group_by("npi")
+        .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
         .collect()
     )
 
     if provider_totals.is_empty():
         return {}
 
-    mean_val = provider_totals["total_billed"].mean()
-    std_val = provider_totals["total_billed"].std()
+    mean_val = provider_totals["total_paid_sum"].mean()
+    std_val = provider_totals["total_paid_sum"].std()
 
     if std_val is None or std_val == 0:
         return {}
 
     flags: dict[str, list[RedFlag]] = {}
     for row in provider_totals.iter_rows(named=True):
-        zscore = (row["total_billed"] - mean_val) / std_val
+        zscore = (row["total_paid_sum"] - mean_val) / std_val
         if zscore > REVENUE_ZSCORE_THRESHOLD:
-            npi = str(row[npi_col])
+            npi = str(row["npi"])
             severity = min(1.0, zscore / 10.0)
             flag = RedFlag(
                 flag_type=RedFlagType.REVENUE_OUTLIER,
-                description=f"Total billed ${row['total_billed']:,.2f} ({zscore:.1f} std devs above mean ${mean_val:,.2f})",
+                description=f"Total paid ${row['total_paid_sum']:,.2f} ({zscore:.1f} std devs above mean ${mean_val:,.2f})",
                 severity=severity,
-                evidence={"total_billed": row["total_billed"], "zscore": round(zscore, 2)},
+                evidence={"total_paid": row["total_paid_sum"], "zscore": round(zscore, 2)},
             )
             flags.setdefault(npi, []).append(flag)
 
@@ -138,22 +126,16 @@ def _detect_revenue_outliers(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
 
 def _detect_billing_spikes(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with sudden monthly billing spikes vs their own history."""
-    names = lf.collect_schema().names()
-    npi_col = "npi" if "npi" in names else "NPI"
-    date_col = "service_date" if "service_date" in names else "SRVC_DT"
-    amount_col = "billed_amount" if "billed_amount" in names else "BILLED_AMT"
-
     monthly = (
-        lf.with_columns(pl.col(date_col).cast(pl.Date).dt.truncate("1mo").alias("month"))
-        .group_by([npi_col, "month"])
-        .agg(pl.col(amount_col).sum().alias("monthly_total"))
+        lf.group_by(["npi", "service_month"])
+        .agg(pl.col("total_paid").sum().alias("monthly_total"))
         .collect()
     )
 
     flags: dict[str, list[RedFlag]] = {}
 
-    for npi in monthly[npi_col].unique().to_list():
-        provider_monthly = monthly.filter(pl.col(npi_col) == npi).sort("month")
+    for npi in monthly["npi"].unique().to_list():
+        provider_monthly = monthly.filter(pl.col("npi") == npi).sort("service_month")
         if len(provider_monthly) < 3:
             continue
 
@@ -168,78 +150,31 @@ def _detect_billing_spikes(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
                 severity = min(1.0, ratio / 10.0)
                 flag = RedFlag(
                     flag_type=RedFlagType.BILLING_SPIKE,
-                    description=f"Monthly billing of ${row['monthly_total']:,.2f} in {row['month']} is {ratio:.1f}x their average ${avg:,.2f}",
+                    description=f"Monthly paid ${row['monthly_total']:,.2f} in {row['service_month']} is {ratio:.1f}x their average ${avg:,.2f}",
                     severity=severity,
-                    evidence={"month": str(row["month"]), "amount": row["monthly_total"], "ratio": round(ratio, 2)},
+                    evidence={"month": str(row["service_month"]), "amount": row["monthly_total"], "ratio": round(ratio, 2)},
                 )
                 flags.setdefault(str(npi), []).append(flag)
 
     return flags
 
 
-def _detect_weekend_patterns(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers with unusually high weekend billing ratios."""
-    names = lf.collect_schema().names()
-    npi_col = "npi" if "npi" in names else "NPI"
-    date_col = "service_date" if "service_date" in names else "SRVC_DT"
-
-    with_dow = lf.with_columns(
-        pl.col(date_col).cast(pl.Date).dt.weekday().alias("dow")
-    )
-
-    provider_weekend = (
-        with_dow.group_by(npi_col)
-        .agg([
-            pl.len().alias("total_claims"),
-            pl.col("dow").is_in([6, 7]).sum().alias("weekend_claims"),
-        ])
-        .with_columns(
-            (pl.col("weekend_claims") / pl.col("total_claims")).alias("weekend_ratio")
-        )
-        .filter(pl.col("weekend_ratio") > WEEKEND_RATIO_THRESHOLD)
-        .filter(pl.col("total_claims") > 20)  # ignore low-volume providers
-        .collect()
-    )
-
-    flags: dict[str, list[RedFlag]] = {}
-    for row in provider_weekend.iter_rows(named=True):
-        npi = str(row[npi_col])
-        ratio = row["weekend_ratio"]
-        severity = min(1.0, ratio / 0.8)
-        flag = RedFlag(
-            flag_type=RedFlagType.WEEKEND_AFTERHOURS,
-            description=f"{ratio:.0%} of {row['total_claims']} claims on weekends (expected ~28%)",
-            severity=severity,
-            evidence={"weekend_ratio": round(ratio, 3), "total_claims": row["total_claims"]},
-        )
-        flags.setdefault(npi, []).append(flag)
-
-    return flags
-
-
 def _detect_suspicious_consistency(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers where an unusually high fraction of claims share the same billed amount."""
-    names = lf.collect_schema().names()
-    npi_col = "npi" if "npi" in names else "NPI"
-    amount_col = "billed_amount" if "billed_amount" in names else "BILLED_AMT"
-
-    if amount_col not in names:
-        return {}
-
-    # For each provider, find total claims and the count of the most common amount
+    """Flag providers where an unusually high fraction of rows share the same paid amount."""
+    # For each provider, find total rows and the count of the most common total_paid value
     provider_stats = (
-        lf.group_by([npi_col, amount_col])
+        lf.group_by(["npi", "total_paid"])
         .agg(pl.len().alias("amount_count"))
         .sort("amount_count", descending=True)
-        .group_by(npi_col)
+        .group_by("npi")
         .agg([
-            pl.col("amount_count").sum().alias("total_claims"),
+            pl.col("amount_count").sum().alias("total_rows"),
             pl.col("amount_count").first().alias("top_amount_count"),
-            pl.col(amount_col).first().alias("top_amount"),
+            pl.col("total_paid").first().alias("top_amount"),
         ])
-        .filter(pl.col("total_claims") >= CONSISTENCY_MIN_CLAIMS)
+        .filter(pl.col("total_rows") >= CONSISTENCY_MIN_ROWS)
         .with_columns(
-            (pl.col("top_amount_count") / pl.col("total_claims")).alias("consistency_ratio")
+            (pl.col("top_amount_count") / pl.col("total_rows")).alias("consistency_ratio")
         )
         .filter(pl.col("consistency_ratio") > CONSISTENCY_RATIO_THRESHOLD)
         .collect()
@@ -247,22 +182,22 @@ def _detect_suspicious_consistency(lf: pl.LazyFrame) -> dict[str, list[RedFlag]]
 
     flags: dict[str, list[RedFlag]] = {}
     for row in provider_stats.iter_rows(named=True):
-        npi = str(row[npi_col])
+        npi = str(row["npi"])
         ratio = row["consistency_ratio"]
         top_amount = row["top_amount"]
-        total = row["total_claims"]
+        total = row["total_rows"]
         severity = min(1.0, ratio)
         flag = RedFlag(
             flag_type=RedFlagType.SUSPICIOUS_CONSISTENCY,
             description=(
-                f"{ratio:.0%} of {total} claims billed at identical amount "
+                f"{ratio:.0%} of {total} line items paid identical amount "
                 f"${top_amount:,.2f} — suggests copy-paste billing"
             ),
             severity=severity,
             evidence={
                 "consistency_ratio": round(ratio, 3),
                 "top_amount": top_amount,
-                "total_claims": total,
+                "total_rows": total,
             },
         )
         flags.setdefault(npi, []).append(flag)

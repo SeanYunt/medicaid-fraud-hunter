@@ -7,33 +7,15 @@ class RedFlagType(Enum):
     VOLUME_IMPOSSIBILITY = "volume_impossibility"
     REVENUE_OUTLIER = "revenue_outlier"
     BILLING_SPIKE = "billing_spike"
-    WEEKEND_AFTERHOURS = "weekend_afterhours"
     SUSPICIOUS_CONSISTENCY = "suspicious_consistency"
 
 
 @dataclass
 class Provider:
-    """A healthcare provider extracted from claims data."""
+    """A healthcare provider identified by NPI."""
     npi: str
-    name: str = ""
-    specialty: str = ""
-    state: str = ""
-    city: str = ""
-    zip_code: str = ""
-
-
-@dataclass
-class Claim:
-    """A single Medicaid claim record."""
-    claim_id: str
-    npi: str
-    service_date: date
-    procedure_code: str
-    billed_amount: float
-    paid_amount: float
-    diagnosis_code: str = ""
-    place_of_service: str = ""
-    units: int = 1
+    billing_npi: str = ""
+    servicing_npi: str = ""
 
 
 @dataclass

@@ -7,18 +7,17 @@ from reports.pdf import generate_dossier_pdf
 
 
 def test_generate_pdf_creates_file(tmp_path: Path):
-    provider = Provider(npi="1234567890", name="Dr. Test", specialty="Cardiology",
-                        state="TX", city="Houston", zip_code="77001")
+    provider = Provider(npi="1234567890")
     scan_result = ScanResult(
         npi="1234567890",
-        provider_name="Dr. Test",
+        provider_name="",
         overall_score=0.75,
         red_flags=[
             RedFlag(
                 flag_type=RedFlagType.VOLUME_IMPOSSIBILITY,
-                description="Billed 80 procedures on 2024-01-15",
+                description="5000 claims in 2024-01-01 (max plausible: 1500)",
                 severity=0.8,
-                evidence={"date": "2024-01-15", "count": 80},
+                evidence={"month": "2024-01-01", "claims": 5000},
             ),
         ],
     )
@@ -26,22 +25,22 @@ def test_generate_pdf_creates_file(tmp_path: Path):
         provider=provider,
         scan_result=scan_result,
         claims_summary={
-            "total_claims": 500,
-            "total_billed": 125000.00,
+            "total_claims": 5000,
             "total_paid": 100000.00,
+            "total_beneficiaries": 800,
+            "active_months": 6,
         },
         peer_comparison={
-            "specialty": "Cardiology",
             "peer_count": 200,
-            "provider_total_billed": 125000.00,
-            "peer_mean_billed": 50000.00,
-            "peer_median_billed": 45000.00,
+            "provider_total_paid": 100000.00,
+            "peer_mean_paid": 50000.00,
+            "peer_median_paid": 45000.00,
             "provider_percentile": 95.0,
             "zscore": 3.2,
         },
         timeline=[
-            {"month": "2024-01-01", "claim_count": 50, "total_billed": 12500.00},
-            {"month": "2024-02-01", "claim_count": 45, "total_billed": 11250.00},
+            {"month": "2024-01-01", "total_claims": 500, "total_paid": 12500.00},
+            {"month": "2024-02-01", "total_claims": 450, "total_paid": 11250.00},
         ],
     )
 

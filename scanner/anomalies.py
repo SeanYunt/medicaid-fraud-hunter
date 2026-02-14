@@ -78,7 +78,11 @@ def scan_all(
         if not flags:
             continue
 
-        overall_score = min(1.0, sum(f.severity for f in flags) / len(flags) + 0.1 * len(flags))
+        # Score based on corroborating evidence: distinct detector types matter
+        # more than repeated flags from the same detector.
+        max_severity = max(f.severity for f in flags)
+        distinct_types = len({f.flag_type for f in flags})
+        overall_score = min(1.0, max_severity * 0.5 + distinct_types * 0.2)
 
         result = ScanResult(
             npi=npi,
@@ -115,32 +119,56 @@ def _detect_volume_impossibility(monthly_df: pl.DataFrame) -> dict[str, list[Red
 
 
 def _detect_revenue_outliers(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers whose total paid amount is far above peers."""
+    """Flag providers whose revenue per claim is far above peers.
+
+    Uses median and MAD (median absolute deviation) instead of mean/std
+    to resist skew from large providers distorting the baseline.
+    """
     provider_totals = (
         monthly_df.group_by("npi")
-        .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
+        .agg([
+            pl.col("total_paid").sum().alias("total_paid_sum"),
+            pl.col("total_claims").sum().alias("total_claims_sum"),
+        ])
+        .filter(pl.col("total_claims_sum") > 0)
+        .with_columns(
+            (pl.col("total_paid_sum") / pl.col("total_claims_sum")).alias("paid_per_claim")
+        )
     )
 
     if provider_totals.is_empty():
         return {}
 
-    mean_val = provider_totals["total_paid_sum"].mean()
-    std_val = provider_totals["total_paid_sum"].std()
+    median_val = provider_totals["paid_per_claim"].median()
+    # MAD = median of absolute deviations from the median
+    mad_val = (provider_totals["paid_per_claim"] - median_val).abs().median()
 
-    if std_val is None or std_val == 0:
+    if mad_val is None or mad_val == 0:
         return {}
+
+    # Scale MAD to be comparable to std dev for normal distributions
+    # (1.4826 is the consistency constant for normal distributions)
+    scaled_mad = mad_val * 1.4826
 
     flags: dict[str, list[RedFlag]] = {}
     for row in provider_totals.iter_rows(named=True):
-        zscore = (row["total_paid_sum"] - mean_val) / std_val
-        if zscore > REVENUE_ZSCORE_THRESHOLD:
+        modified_zscore = (row["paid_per_claim"] - median_val) / scaled_mad
+        if modified_zscore > REVENUE_ZSCORE_THRESHOLD:
             npi = str(row["npi"])
-            severity = min(1.0, zscore / 10.0)
+            severity = min(1.0, modified_zscore / 10.0)
             flag = RedFlag(
                 flag_type=RedFlagType.REVENUE_OUTLIER,
-                description=f"Total paid ${row['total_paid_sum']:,.2f} ({zscore:.1f} std devs above mean ${mean_val:,.2f})",
+                description=(
+                    f"Revenue per claim ${row['paid_per_claim']:,.2f} "
+                    f"({modified_zscore:.1f} MADs above median ${median_val:,.2f}/claim)"
+                ),
                 severity=severity,
-                evidence={"total_paid": row["total_paid_sum"], "zscore": round(zscore, 2)},
+                evidence={
+                    "paid_per_claim": round(row["paid_per_claim"], 2),
+                    "total_paid": row["total_paid_sum"],
+                    "total_claims": row["total_claims_sum"],
+                    "modified_zscore": round(modified_zscore, 2),
+                },
             )
             flags.setdefault(npi, []).append(flag)
 
@@ -178,6 +206,9 @@ def _detect_billing_spikes(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]
 
 def _detect_suspicious_consistency(procedure_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers where an unusually high fraction of rows share the same paid amount."""
+    # Exclude $0 rows — uniform zeros are a data artifact, not copy-paste fraud
+    procedure_df = procedure_df.filter(pl.col("total_paid") != 0)
+
     provider_stats = (
         procedure_df
         .sort("row_count", descending=True)

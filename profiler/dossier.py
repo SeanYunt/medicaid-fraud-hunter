@@ -50,7 +50,17 @@ def _summarize_claims(claims: pl.DataFrame) -> dict:
         summary["total_beneficiaries"] = claims["beneficiaries"].sum()
 
     if "service_month" in names:
-        months = claims["service_month"].cast(pl.Date)
+        # Handle both "YYYY-MM" and "YYYY-MM-DD" formats
+        months = (
+            claims.select(
+                pl.when(pl.col("service_month").cast(pl.Utf8).str.len_chars() <= 7)
+                .then(pl.col("service_month").cast(pl.Utf8) + "-01")
+                .otherwise(pl.col("service_month").cast(pl.Utf8))
+                .str.to_date("%Y-%m-%d")
+                .alias("parsed")
+            )
+            .to_series()
+        )
         summary["date_range_start"] = str(months.min())
         summary["date_range_end"] = str(months.max())
         summary["active_months"] = claims["service_month"].n_unique()

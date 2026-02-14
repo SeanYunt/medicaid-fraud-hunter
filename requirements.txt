@@ -1,0 +1,4 @@
+click>=8.0
+polars>=1.0
+reportlab>=4.0
+pytest>=8.0

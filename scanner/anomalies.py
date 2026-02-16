@@ -13,6 +13,7 @@ REVENUE_ZSCORE_THRESHOLD = 3.0  # Standard deviations above mean
 SPIKE_MULTIPLIER = 5.0  # Monthly billing spike vs provider's own average
 CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of rows share same paid amount
 CONSISTENCY_MIN_ROWS = 30  # Minimum rows to evaluate consistency
+MIN_TOTAL_PAID = 100_000  # Ignore providers below this total — too small for viable qui tam case
 
 
 def scan_all(
@@ -48,6 +49,20 @@ def scan_all(
             .agg(pl.len().alias("row_count"))
             .collect()
         )
+
+    # Filter out providers with total paid below minimum threshold
+    provider_totals = (
+        monthly_df.group_by("npi")
+        .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
+    )
+    qualifying_npis = (
+        provider_totals.filter(pl.col("total_paid_sum") >= MIN_TOTAL_PAID)["npi"].to_list()
+    )
+    excluded = provider_totals.height - len(qualifying_npis)
+    monthly_df = monthly_df.filter(pl.col("npi").is_in(qualifying_npis))
+    procedure_df = procedure_df.filter(pl.col("npi").is_in(qualifying_npis))
+    click.echo(f"Filtered to {len(qualifying_npis):,} providers with >=${MIN_TOTAL_PAID:,} total paid "
+               f"({excluded:,} excluded)")
 
     click.echo("Running anomaly detection...")
 

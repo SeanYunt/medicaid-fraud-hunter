@@ -58,21 +58,22 @@ def _generate_rows() -> list[dict]:
 
     # --- Spike provider: 6 normal months, 1 extreme spike ---
     for m in range(1, 7):
-        add(SPIKE_NPI, "99213", _month(2024, m), 15, 25, 2500.00)
-    # Spike month: 30x normal
-    add(SPIKE_NPI, "99213", _month(2024, 7), 200, 500, 75000.00)
+        add(SPIKE_NPI, "99213", _month(2024, m), 15, 25, 5000.00)
+    # Spike month: ~20x normal; total paid = 6*5000 + 100000 = 130000 (above MIN_TOTAL_PAID)
+    add(SPIKE_NPI, "99213", _month(2024, 7), 200, 500, 100000.00)
 
-    # --- Consistency provider: 40 rows all with identical paid amount ---
+    # --- Consistency provider: 42 rows all with identical paid amount ---
+    # total paid = 42 rows * 3000 = 126000 (above MIN_TOTAL_PAID)
     for m in range(1, 7):
         for code in ["99211", "99212", "99213", "99214", "99215", "99216", "99217"]:
-            add(CONSISTENCY_NPI, code, _month(2024, m), 5, 12, 99.99)
-    # Two extra to hit 44 rows total (above CONSISTENCY_MIN_ROWS=30)
+            add(CONSISTENCY_NPI, code, _month(2024, m), 5, 12, 3000.00)
 
     # --- Filler providers: 20 normal providers so z-score stats are meaningful ---
+    # Each filler: 6 months * ~20000-38000 = 120000-228000 (above MIN_TOTAL_PAID)
     for p in range(20):
         filler_npi = f"99000000{p:02d}"
         for m in range(1, 7):
-            add(filler_npi, "99213", _month(2024, m), 10, 20, 2000 + (p % 10) * 200)
+            add(filler_npi, "99213", _month(2024, m), 10, 20, 20000 + (p % 10) * 2000)
 
     return rows
 

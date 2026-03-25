@@ -144,5 +144,67 @@ def _load_scan_result(npi: str):
     return None
 
 
+@cli.command("spark-scan")
+@click.option("--threshold", default=0.3, type=float,
+              help="Minimum anomaly score to include (0.0-1.0)")
+@click.option("--data-path", default=None, type=click.Path(exists=True),
+              help="Path to dataset (auto-detected if not specified)")
+@click.option("--top", default=50, type=int,
+              help="Number of top results to display")
+def spark_scan(threshold: float, data_path: str | None, top: int):
+    """Scan the dataset using PySpark (distributed-ready version of 'scan')."""
+    try:
+        from spark.loader import (
+            build_monthly_summary,
+            build_procedure_summary,
+            get_or_create_session,
+            load_claims,
+        )
+        from spark.anomalies import run_all_detectors
+    except ImportError:
+        click.echo("PySpark is not installed. Run: pip install pyspark", err=True)
+        raise SystemExit(1)
+
+    filepath = Path(data_path) if data_path else find_dataset()
+
+    click.echo(f"Starting Spark session...")
+    spark = get_or_create_session()
+    spark.sparkContext.setLogLevel("WARN")
+
+    click.echo(f"Loading claims: {filepath}")
+    df = load_claims(spark, filepath)
+
+    click.echo("Building monthly summary...")
+    monthly_df = build_monthly_summary(df)
+
+    click.echo("Building procedure summary...")
+    procedure_df = build_procedure_summary(df)
+
+    click.echo("Running anomaly detectors...")
+    results_df = run_all_detectors(monthly_df, procedure_df, threshold=threshold)
+
+    results = results_df.collect()
+    click.echo(f"\nFound {len(results)} suspicious providers above threshold {threshold}")
+
+    # Save to CSV
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_DIR / "spark_scan_results.csv"
+    with open(output_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["rank", "npi", "score", "num_flags", "flag_types"])
+        for i, row in enumerate(results[:top], 1):
+            writer.writerow([i, row["npi"], f"{row['overall_score']:.3f}",
+                             row["num_flags"], row["flag_types"]])
+    click.echo(f"Results saved to {output_path}")
+
+    click.echo(f"\nTop {min(top, len(results))} suspicious providers:")
+    click.echo("-" * 80)
+    for i, row in enumerate(results[:top], 1):
+        click.echo(f"  {i:3d}. NPI {row['npi']} | Score: {row['overall_score']:.0%} | "
+                   f"Flags: {row['num_flags']} ({row['flag_types']})")
+
+    spark.stop()
+
+
 if __name__ == "__main__":
     cli()

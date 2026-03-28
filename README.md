@@ -26,7 +26,7 @@ python cli.py profile <NPI>
 
 ## Data Setup
 
-A 1,000-provider sample (`medicaid-provider-spending-sample.parquet`, 2.8 MB) is included for development and proof-of-concept use. For full analysis, download the complete dataset (~2.8 GB):
+To get started, download the complete dataset (~2.8 GB):
 
 1. Go to [data.cms.gov](https://data.cms.gov/) and search for **"Medicaid Provider Spending"** (also listed under Medicare/Medicaid claims data).
 2. Download the Parquet or CSV export.

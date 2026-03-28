@@ -8,7 +8,12 @@ from data.loader import load_claims, load_claims_for_provider
 from data.models import Dossier, Provider, ScanResult
 
 
-def build_dossier(filepath: Path, npi: str, scan_result: ScanResult | None = None) -> Dossier:
+def build_dossier(
+    filepath: Path,
+    npi: str,
+    scan_result: ScanResult | None = None,
+    monthly_path: Path | None = None,
+) -> Dossier:
     """Build a comprehensive dossier for a specific provider."""
     click.echo(f"Building dossier for provider {npi}...")
 
@@ -34,7 +39,7 @@ def build_dossier(filepath: Path, npi: str, scan_result: ScanResult | None = Non
         click.echo("  Warning: NPI not found in NPPES registry")
 
     claims_summary = _summarize_claims(claims)
-    peer_comparison = _compare_to_peers(filepath, npi, claims)
+    peer_comparison = _compare_to_peers(filepath, npi, claims, monthly_path=monthly_path)
     timeline = _build_timeline(claims)
 
     if scan_result is None:
@@ -100,18 +105,31 @@ def _summarize_claims(claims: pl.DataFrame) -> dict:
     return summary
 
 
-def _compare_to_peers(filepath: Path, npi: str, provider_claims: pl.DataFrame) -> dict:
+def _compare_to_peers(
+    filepath: Path,
+    npi: str,
+    provider_claims: pl.DataFrame,
+    monthly_path: Path | None = None,
+) -> dict:
     """Compare this provider's total paid amount to all other providers."""
     if "total_paid" not in provider_claims.columns:
         return {"note": "Peer comparison unavailable — missing total_paid column"}
 
-    lf = load_claims(filepath)
-
-    peers = (
-        lf.group_by("npi")
-        .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
-        .collect()
-    )
+    if monthly_path and monthly_path.exists():
+        # Fast path: use preprocessed summary (~1MB) instead of raw file (~2.8GB)
+        peers = (
+            pl.scan_parquet(monthly_path)
+            .group_by("npi")
+            .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
+            .collect()
+        )
+    else:
+        lf = load_claims(filepath)
+        peers = (
+            lf.group_by("npi")
+            .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
+            .collect()
+        )
 
     if peers.is_empty():
         return {"note": "No peers found"}

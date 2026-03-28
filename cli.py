@@ -90,7 +90,10 @@ def profile(npi: str, data_path: str | None):
     # Check if we have scan results for this provider
     scan_result = _load_scan_result(npi)
 
-    dossier = build_dossier(filepath, npi, scan_result)
+    preprocessed = find_preprocessed()
+    monthly_path = preprocessed[0] if preprocessed else None
+
+    dossier = build_dossier(filepath, npi, scan_result, monthly_path=monthly_path)
 
     # Generate PDF
     pdf_path = generate_dossier_pdf(dossier)

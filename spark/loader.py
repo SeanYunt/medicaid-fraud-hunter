@@ -36,8 +36,9 @@ def get_or_create_session(app_name: str = "MedicaidFraudHunter") -> SparkSession
         SparkSession.builder
         .appName(app_name)
         .master("local[*]")
-        .config("spark.sql.shuffle.partitions", "4")   # small dataset — fewer partitions
-        .config("spark.driver.memory", "2g")
+        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.driver.memory", "4g")
+        .config("spark.executor.memory", "4g")
         .config("spark.driver.host", "127.0.0.1")      # avoid hostname resolution issues on Windows
         .config("spark.driver.bindAddress", "127.0.0.1")
         .config("spark.pyspark.python", sys.executable)

@@ -12,6 +12,8 @@ import pytest
 
 pytest.importorskip("pyspark", reason="pyspark not installed")
 
+from collections.abc import Iterator
+
 from pyspark.sql import SparkSession
 
 from spark.loader import (
@@ -44,7 +46,7 @@ from tests.conftest import (
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session")
-def spark() -> SparkSession:
+def spark() -> Iterator[SparkSession]:
     session = get_or_create_session("MedicaidFraudHunterTest")
     session.sparkContext.setLogLevel("ERROR")
     yield session

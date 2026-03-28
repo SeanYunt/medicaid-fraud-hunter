@@ -4,17 +4,24 @@ A CLI tool that scans public HHS Medicaid provider spending data to flag potenti
 
 ## Quick Start
 
+**With Docker (recommended):**
+
+```bash
+docker build -t medicaid-fraud-hunter .
+
+docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter preprocess
+docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter scan --top 50
+docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter profile <NPI>
+```
+
+**Without Docker:**
+
 ```bash
 pip install -r requirements.txt
 
-# One-time preprocessing (aggregates raw data into small summary files)
-python cli.py preprocess --data-path data/raw/medicaid-provider-spending-sample.parquet
-
-# Scan for suspicious providers
-python cli.py scan --data-path data/raw/medicaid-provider-spending-sample.parquet --top 50
-
-# Generate a detailed PDF dossier for a specific provider
-python cli.py profile <NPI> --data-path data/raw/medicaid-provider-spending-sample.parquet
+python cli.py preprocess
+python cli.py scan --top 50
+python cli.py profile <NPI>
 ```
 
 ## Data Source
@@ -48,6 +55,10 @@ This prioritizes providers where multiple independent analytical methods point t
 
 Reads the raw dataset once and writes two small summary parquet files (~1 MB combined), eliminating repeated disk I/O on the full file.
 
+### `spark-scan`
+
+Same as `scan` but executes via PySpark in `local[*]` mode. Produces identical results and writes to `output/spark_scan_results.csv`. Designed to run on a cluster as data volume grows.
+
 ### `scan`
 
 Runs all four anomaly detectors and outputs a ranked list of suspicious providers. Results are saved to `output/scan_results.csv`.
@@ -70,7 +81,11 @@ Output: `output/dossiers/dossier_<NPI>_<timestamp>.pdf`
 ## Testing
 
 ```bash
+# Local
 python -m pytest tests/ -v
+
+# Docker
+docker run --rm --entrypoint python medicaid-fraud-hunter -m pytest tests/ -v
 ```
 
 27 tests covering all detectors, data loading, dossier generation, and PDF output using synthetic test fixtures.
@@ -78,6 +93,8 @@ python -m pytest tests/ -v
 ## Tech Stack
 
 - **Polars** — fast, memory-efficient dataframe processing with lazy evaluation
+- **PySpark** — distributed-ready anomaly detection (`spark-scan`); runs locally via `local[*]`
 - **Click** — CLI framework
 - **ReportLab** — PDF generation
 - **Pytest** — testing
+- **Docker** — containerized runtime with JDK 17 + Python 3.11 (Eclipse Temurin base image)

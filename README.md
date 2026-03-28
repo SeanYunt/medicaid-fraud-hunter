@@ -24,11 +24,30 @@ python cli.py scan --top 50
 python cli.py profile <NPI>
 ```
 
+## Data Setup
+
+A 1,000-provider sample (`medicaid-provider-spending-sample.parquet`, 2.8 MB) is included for development and proof-of-concept use. For full analysis, download the complete dataset (~2.8 GB):
+
+1. Go to [data.cms.gov](https://data.cms.gov/) and search for **"Medicaid Provider Spending"** (also listed under Medicare/Medicaid claims data).
+2. Download the Parquet or CSV export.
+3. Place the file in `data/raw/`:
+   ```
+   data/raw/medicaid-provider-spending.parquet
+   ```
+   The tool auto-detects any `.parquet` or `.csv` file in that directory (largest file wins).
+
+4. Run preprocessing to build the fast-scan summaries:
+   ```bash
+   python cli.py preprocess
+   # or
+   docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter preprocess
+   ```
+
+The `data/raw/` and `data/processed/` directories are excluded from git (see `.gitignore`).
+
 ## Data Source
 
 Uses the [HHS Medicaid Provider Spending](https://data.cms.gov/) dataset (public). The raw file contains aggregated Medicaid claims with columns for provider NPIs, procedure codes, service months, beneficiary counts, claim counts, and payment amounts.
-
-A 1,000-provider sample (`medicaid-provider-spending-sample.parquet`, 2.8 MB) is included for development and proof-of-concept use. The full dataset is 2.8 GB.
 
 ## Anomaly Detectors
 

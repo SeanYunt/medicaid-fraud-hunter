@@ -9,3 +9,4 @@ output/
 dist/
 build/
 .env
+.claude/

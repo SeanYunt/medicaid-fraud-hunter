@@ -8,6 +8,8 @@ class RedFlagType(Enum):
     REVENUE_OUTLIER = "revenue_outlier"
     BILLING_SPIKE = "billing_spike"
     SUSPICIOUS_CONSISTENCY = "suspicious_consistency"
+    NOS_CODE_CONCENTRATION = "nos_code_concentration"
+    UPCODING_TRAJECTORY = "upcoding_trajectory"
 
 
 @dataclass

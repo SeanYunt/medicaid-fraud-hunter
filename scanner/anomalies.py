@@ -15,6 +15,27 @@ CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of rows share same paid 
 CONSISTENCY_MIN_ROWS = 30  # Minimum rows to evaluate consistency
 MIN_TOTAL_PAID = 100_000  # Ignore providers below this total — too small for viable qui tam case
 
+# NOS/miscellaneous HCPCS codes — vague codes that obscure what was actually billed
+NOS_CODES = {
+    "B9998",  # Enteral supplies, not otherwise classified
+    "E1399",  # Durable medical equipment, miscellaneous
+    "A9999",  # Miscellaneous DME supply or accessory, NOS
+    "A9270",  # Non-covered item or service
+    "K0108",  # Wheelchair component or accessory, NOS
+    "L9900",  # Orthotic/prosthetic supply, accessory, NOS
+    "S9999",  # Services, not otherwise classified
+    "T9999",  # Not otherwise classified
+}
+NOS_CONCENTRATION_THRESHOLD = 0.25  # Flag if >25% of total paid is under NOS codes
+
+# E&M office visit codes by reimbursement level (1=lowest, 5=highest)
+EM_CODES = {"99211": 1, "99212": 2, "99213": 3, "99214": 4, "99215": 5}
+UPCODING_SHIFT_THRESHOLD = 0.4   # Avg code level shift > 0.4 between early/late periods
+UPCODING_MIN_CLAIMS = 50         # Minimum E&M claims to evaluate
+
+# Flag types that map to a specific named scheme (vs general statistical outliers)
+SCHEME_FLAG_TYPES = {RedFlagType.NOS_CODE_CONCENTRATION, RedFlagType.UPCODING_TRAJECTORY}
+
 
 def scan_all(
     filepath: Path,
@@ -27,6 +48,8 @@ def scan_all(
     If monthly_path and procedure_path are provided, uses the small preprocessed
     files instead of reading the full raw dataset.
     """
+    code_df: pl.DataFrame | None = None
+
     if monthly_path and procedure_path:
         click.echo("Loading preprocessed summaries...")
         monthly_df = pl.read_parquet(monthly_path)
@@ -47,6 +70,15 @@ def scan_all(
         procedure_df = (
             lf.group_by(["npi", "total_paid"])
             .agg(pl.len().alias("row_count"))
+            .collect()
+        )
+        click.echo("Aggregating procedure code data...")
+        code_df = (
+            lf.group_by(["npi", "procedure_code", "service_month"])
+            .agg([
+                pl.col("total_claims").sum(),
+                pl.col("total_paid").sum(),
+            ])
             .collect()
         )
 
@@ -78,9 +110,17 @@ def scan_all(
     # --- Suspicious consistency ---
     consistency_flags = _detect_suspicious_consistency(procedure_df)
 
+    # --- Scheme-specific detectors (require raw code-level data) ---
+    if code_df is not None:
+        nos_flags = _detect_nos_concentration(code_df)
+        upcoding_flags = _detect_upcoding_trajectory(code_df)
+    else:
+        nos_flags = {}
+        upcoding_flags = {}
+
     # Merge all flags by NPI
     all_npis = (set(volume_flags) | set(revenue_flags) | set(spike_flags)
-                | set(consistency_flags))
+                | set(consistency_flags) | set(nos_flags) | set(upcoding_flags))
 
     results = []
     for npi in all_npis:
@@ -89,15 +129,18 @@ def scan_all(
         flags.extend(revenue_flags.get(npi, []))
         flags.extend(spike_flags.get(npi, []))
         flags.extend(consistency_flags.get(npi, []))
+        flags.extend(nos_flags.get(npi, []))
+        flags.extend(upcoding_flags.get(npi, []))
 
         if not flags:
             continue
 
-        # Score based on corroborating evidence: distinct detector types matter
-        # more than repeated flags from the same detector.
+        # Scoring weights scheme-specific flags (legally actionable patterns)
+        # more heavily than general statistical outliers.
         max_severity = max(f.severity for f in flags)
         distinct_types = len({f.flag_type for f in flags})
-        overall_score = min(1.0, max_severity * 0.5 + distinct_types * 0.2)
+        scheme_types = len({f.flag_type for f in flags if f.flag_type in SCHEME_FLAG_TYPES})
+        overall_score = min(1.0, max_severity * 0.4 + distinct_types * 0.15 + scheme_types * 0.2)
 
         result = ScanResult(
             npi=npi,
@@ -215,6 +258,121 @@ def _detect_billing_spikes(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]
                     evidence={"month": str(row["service_month"]), "amount": row["total_paid"], "ratio": round(ratio, 2)},
                 )
                 flags.setdefault(str(npi), []).append(flag)
+
+    return flags
+
+
+def _detect_nos_concentration(code_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+    """Flag providers where NOS/miscellaneous codes make up a large share of billing.
+
+    NOS codes lack specificity and are a classic vehicle for DME and supply fraud —
+    they obscure what was actually billed and are harder to audit than named items.
+    """
+    provider_totals = (
+        code_df.group_by("npi")
+        .agg(pl.col("total_paid").sum().alias("total_paid_all"))
+    )
+    nos_totals = (
+        code_df.filter(pl.col("procedure_code").is_in(NOS_CODES))
+        .group_by("npi")
+        .agg(pl.col("total_paid").sum().alias("nos_paid"))
+    )
+    merged = (
+        provider_totals.join(nos_totals, on="npi", how="inner")
+        .with_columns(
+            (pl.col("nos_paid") / pl.col("total_paid_all")).alias("nos_ratio")
+        )
+        .filter(pl.col("nos_ratio") >= NOS_CONCENTRATION_THRESHOLD)
+    )
+
+    flags: dict[str, list[RedFlag]] = {}
+    for row in merged.iter_rows(named=True):
+        npi = str(row["npi"])
+        ratio = row["nos_ratio"]
+        nos_paid = row["nos_paid"]
+        severity = min(1.0, ratio / 0.5)  # 50%+ NOS = max severity
+        flag = RedFlag(
+            flag_type=RedFlagType.NOS_CODE_CONCENTRATION,
+            description=(
+                f"{ratio:.0%} of billing (${nos_paid:,.0f}) under miscellaneous/unclassified "
+                f"codes — vague codes obscure what was actually provided"
+            ),
+            severity=severity,
+            evidence={
+                "nos_ratio": round(ratio, 3),
+                "nos_paid": round(nos_paid, 2),
+                "total_paid": round(row["total_paid_all"], 2),
+            },
+        )
+        flags.setdefault(npi, []).append(flag)
+
+    return flags
+
+
+def _detect_upcoding_trajectory(code_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+    """Flag providers with a systematic shift toward higher-reimbursed E&M codes over time.
+
+    Compares the weighted average E&M code level in the first half of the provider's
+    billing history vs the second half. A significant upward shift (with no change in
+    patient volume) is a signature of deliberate upcoding rather than clinical change.
+    """
+    em_df = code_df.filter(pl.col("procedure_code").is_in(set(EM_CODES.keys())))
+
+    if em_df.is_empty():
+        return {}
+
+    em_df = em_df.with_columns(
+        pl.col("procedure_code")
+        .map_elements(lambda c: EM_CODES.get(c, 0), return_dtype=pl.Int32)
+        .alias("code_level")
+    )
+
+    flags: dict[str, list[RedFlag]] = {}
+    for npi in em_df["npi"].unique().to_list():
+        provider_em = em_df.filter(pl.col("npi") == npi).sort("service_month")
+
+        total_claims = provider_em["total_claims"].sum()
+        if total_claims < UPCODING_MIN_CLAIMS:
+            continue
+
+        months = provider_em["service_month"].unique().sort().to_list()
+        if len(months) < 6:
+            continue
+
+        mid = len(months) // 2
+        early = provider_em.filter(pl.col("service_month").is_in(months[:mid]))
+        late = provider_em.filter(pl.col("service_month").is_in(months[mid:]))
+
+        def weighted_avg(df: pl.DataFrame) -> float:
+            total = df["total_claims"].sum()
+            if total == 0:
+                return 0.0
+            return float((df["code_level"] * df["total_claims"]).sum()) / total
+
+        early_avg = weighted_avg(early)
+        late_avg = weighted_avg(late)
+        shift = late_avg - early_avg
+
+        if shift >= UPCODING_SHIFT_THRESHOLD:
+            severity = min(1.0, shift / 1.5)
+            total_paid = float(provider_em["total_paid"].sum())
+            flag = RedFlag(
+                flag_type=RedFlagType.UPCODING_TRAJECTORY,
+                description=(
+                    f"E&M code level shifted +{shift:.2f} points over time "
+                    f"({early_avg:.2f} → {late_avg:.2f}) — systematic upgrade toward "
+                    f"higher-reimbursed codes across {int(total_claims):,} claims"
+                ),
+                severity=severity,
+                evidence={
+                    "early_avg_level": round(early_avg, 2),
+                    "late_avg_level": round(late_avg, 2),
+                    "shift": round(shift, 2),
+                    "total_em_claims": int(total_claims),
+                    "total_em_paid": round(total_paid, 2),
+                },
+            )
+            flags.setdefault(str(npi), []).append(flag)
 
     return flags
 

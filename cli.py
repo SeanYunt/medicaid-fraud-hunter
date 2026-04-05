@@ -39,15 +39,16 @@ def scan(threshold: float, data_path: str | None, top: int):
     """Scan the dataset for suspicious providers."""
     filepath = Path(data_path) if data_path else find_dataset()
 
-    # Use preprocessed files if available
-    preprocessed = find_preprocessed()
+    # Only use preprocessed files when no explicit data-path was given
+    preprocessed = find_preprocessed() if not data_path else None
     if preprocessed:
         monthly_path, procedure_path = preprocessed
         click.echo(f"Using preprocessed data from {monthly_path.parent}")
     else:
         monthly_path = procedure_path = None
-        click.echo(f"No preprocessed data found. Scanning raw file: {filepath}")
-        click.echo("Tip: Run 'python cli.py preprocess' first for much faster scans.")
+        click.echo(f"Scanning: {filepath}")
+        if not data_path:
+            click.echo("Tip: Run 'python cli.py preprocess' first for much faster scans.")
 
     results = scan_all(filepath, threshold=threshold,
                        monthly_path=monthly_path, procedure_path=procedure_path)

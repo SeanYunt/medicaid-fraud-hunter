@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import click
-import polars as pl
+import pandas as pd
 
 from data.fetch import lookup_npi
 from data.loader import load_claims, load_claims_for_provider
@@ -18,7 +18,7 @@ def build_dossier(
     click.echo(f"Building dossier for provider {npi}...")
 
     claims = load_claims_for_provider(filepath, npi)
-    if claims.is_empty():
+    if claims.empty:
         raise click.ClickException(f"No claims found for NPI {npi}")
 
     click.echo(f"Looking up NPI {npi} in NPPES registry...")
@@ -54,53 +54,45 @@ def build_dossier(
     )
 
 
-def _summarize_claims(claims: pl.DataFrame) -> dict:
+def _summarize_claims(claims: pd.DataFrame) -> dict:
     """Generate a summary from the provider's aggregated claims data."""
-    names = claims.columns
+    names = claims.columns.tolist()
 
-    summary = {
+    summary: dict = {
         "total_rows": len(claims),
     }
 
     if "total_claims" in names:
-        summary["total_claims"] = claims["total_claims"].sum()
+        summary["total_claims"] = int(claims["total_claims"].sum())
 
     if "total_paid" in names:
-        summary["total_paid"] = claims["total_paid"].sum()
+        summary["total_paid"] = float(claims["total_paid"].sum())
 
     if "beneficiaries" in names:
-        summary["total_beneficiaries"] = claims["beneficiaries"].sum()
+        summary["total_beneficiaries"] = int(claims["beneficiaries"].sum())
 
     if "service_month" in names:
         # Handle both "YYYY-MM" and "YYYY-MM-DD" formats
-        months = (
-            claims.select(
-                pl.when(pl.col("service_month").cast(pl.Utf8).str.len_chars() <= 7)
-                .then(pl.col("service_month").cast(pl.Utf8) + "-01")
-                .otherwise(pl.col("service_month").cast(pl.Utf8))
-                .str.to_date("%Y-%m-%d")
-                .alias("parsed")
-            )
-            .to_series()
-        )
-        summary["date_range_start"] = str(months.min())
-        summary["date_range_end"] = str(months.max())
-        summary["active_months"] = claims["service_month"].n_unique()
+        service_months = claims["service_month"].astype(str)
+        service_months = service_months.apply(lambda s: s + "-01" if len(s) <= 7 else s)
+        parsed = pd.to_datetime(service_months, format="%Y-%m-%d")
+        summary["date_range_start"] = str(parsed.min().date())
+        summary["date_range_end"] = str(parsed.max().date())
+        summary["active_months"] = claims["service_month"].nunique()
 
     if "procedure_code" in names:
-        agg_cols = [pl.len().alias("row_count")]
+        grp = claims.groupby("procedure_code")
+        top_agg = pd.DataFrame({"row_count": grp.size()})
         if "total_claims" in names:
-            agg_cols.append(pl.col("total_claims").sum().alias("claims"))
+            top_agg["claims"] = grp["total_claims"].sum()
         if "total_paid" in names:
-            agg_cols.append(pl.col("total_paid").sum().alias("paid"))
-
+            top_agg["paid"] = grp["total_paid"].sum()
         top_procedures = (
-            claims.group_by("procedure_code")
-            .agg(agg_cols)
-            .sort("row_count", descending=True)
+            top_agg.reset_index()
+            .sort_values("row_count", ascending=False)
             .head(10)
         )
-        summary["top_procedures"] = top_procedures.to_dicts()
+        summary["top_procedures"] = top_procedures.to_dict("records")
 
     return summary
 
@@ -108,7 +100,7 @@ def _summarize_claims(claims: pl.DataFrame) -> dict:
 def _compare_to_peers(
     filepath: Path,
     npi: str,
-    provider_claims: pl.DataFrame,
+    provider_claims: pd.DataFrame,
     monthly_path: Path | None = None,
 ) -> dict:
     """Compare this provider's total paid amount to all other providers."""
@@ -118,67 +110,63 @@ def _compare_to_peers(
     if monthly_path and monthly_path.exists():
         # Fast path: use preprocessed summary (~1MB) instead of raw file (~2.8GB)
         peers = (
-            pl.scan_parquet(monthly_path)
-            .group_by("npi")
-            .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
-            .collect()
+            pd.read_parquet(monthly_path, engine="pyarrow")
+            .groupby("npi", as_index=False)["total_paid"]
+            .sum()
+            .rename(columns={"total_paid": "total_paid_sum"})
         )
     else:
-        lf = load_claims(filepath)
+        df = load_claims(filepath)
         peers = (
-            lf.group_by("npi")
-            .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
-            .collect()
+            df.groupby("npi", as_index=False)["total_paid"]
+            .sum()
+            .rename(columns={"total_paid": "total_paid_sum"})
         )
 
-    if peers.is_empty():
+    if peers.empty:
         return {"note": "No peers found"}
 
-    provider_total = provider_claims["total_paid"].sum()
-    peer_mean = peers["total_paid_sum"].mean()
-    peer_median = peers["total_paid_sum"].median()
-    peer_std = peers["total_paid_sum"].std()
+    provider_total = float(provider_claims["total_paid"].sum())
+    peer_mean = float(peers["total_paid_sum"].mean())
+    peer_median = float(peers["total_paid_sum"].median())
+    peer_std = float(peers["total_paid_sum"].std())
 
     percentile_rank = (
-        peers.filter(pl.col("total_paid_sum") <= provider_total).height / peers.height * 100
+        (peers["total_paid_sum"] <= provider_total).sum() / len(peers) * 100
     )
 
     comparison = {
-        "peer_count": peers.height,
+        "peer_count": len(peers),
         "provider_total_paid": provider_total,
         "peer_mean_paid": round(peer_mean, 2),
         "peer_median_paid": round(peer_median, 2),
-        "provider_percentile": round(percentile_rank, 1),
+        "provider_percentile": round(float(percentile_rank), 1),
     }
 
-    if peer_std and peer_std > 0:
+    if pd.notna(peer_std) and peer_std > 0:
         comparison["zscore"] = round((provider_total - peer_mean) / peer_std, 2)
 
     return comparison
 
 
-def _build_timeline(claims: pl.DataFrame) -> list[dict]:
+def _build_timeline(claims: pd.DataFrame) -> list[dict]:
     """Build a monthly billing timeline for the provider."""
     if "service_month" not in claims.columns:
         return []
 
-    agg_cols = [pl.len().alias("row_count")]
+    grp = claims.groupby("service_month")
+    monthly = pd.DataFrame({"row_count": grp.size()})
     if "total_claims" in claims.columns:
-        agg_cols.append(pl.col("total_claims").sum().alias("total_claims"))
+        monthly["total_claims"] = grp["total_claims"].sum()
     if "total_paid" in claims.columns:
-        agg_cols.append(pl.col("total_paid").sum().alias("total_paid"))
-
-    monthly = (
-        claims.group_by("service_month")
-        .agg(agg_cols)
-        .sort("service_month")
-    )
+        monthly["total_paid"] = grp["total_paid"].sum()
+    monthly = monthly.reset_index().sort_values("service_month")
 
     return [
         {
             "month": str(row["service_month"]),
-            "total_claims": row.get("total_claims", row["row_count"]),
-            "total_paid": row.get("total_paid", 0),
+            "total_claims": row["total_claims"] if "total_claims" in monthly.columns else row["row_count"],
+            "total_paid": row["total_paid"] if "total_paid" in monthly.columns else 0,
         }
-        for row in monthly.iter_rows(named=True)
+        for _, row in monthly.iterrows()
     ]

@@ -6,7 +6,7 @@ from data.models import Dossier, Provider, RedFlag, RedFlagType, ScanResult
 def test_red_flag_type_values():
     assert RedFlagType.VOLUME_IMPOSSIBILITY.value == "volume_impossibility"
     assert RedFlagType.SUSPICIOUS_CONSISTENCY.value == "suspicious_consistency"
-    assert len(RedFlagType) == 4
+    assert len(RedFlagType) == 6
 
 
 def test_provider_defaults():

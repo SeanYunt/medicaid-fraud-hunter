@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import click
-import polars as pl
+import pandas as pd
 
 # Column name mapping: HHS dataset -> internal names
 # HHS dataset columns:
@@ -24,45 +24,52 @@ PROVIDER_MONTHLY_FILE = PROCESSED_DIR / "provider_monthly.parquet"
 PROVIDER_PROCEDURE_FILE = PROCESSED_DIR / "provider_procedure.parquet"
 
 
-def _normalize(lf: pl.LazyFrame) -> pl.LazyFrame:
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     """Rename HHS columns to internal names and cast NPI to string."""
-    existing_cols = lf.collect_schema().names()
-    rename_map = {raw: internal for raw, internal in REVERSE_MAP.items() if raw in existing_cols}
-
+    rename_map = {raw: internal for raw, internal in REVERSE_MAP.items() if raw in df.columns}
     if rename_map:
-        lf = lf.rename(rename_map)
-
-    names = lf.collect_schema().names()
+        df = df.rename(columns=rename_map)
     for npi_col in ["npi", "servicing_npi"]:
-        if npi_col in names:
-            lf = lf.with_columns(pl.col(npi_col).cast(pl.Utf8))
+        if npi_col in df.columns:
+            df[npi_col] = df[npi_col].astype(str)
+    return df
 
-    return lf
 
+def load_claims(filepath: Path) -> pd.DataFrame:
+    """Load claims data as a pandas DataFrame.
 
-def load_claims(filepath: Path) -> pl.LazyFrame:
-    """Load claims data as a Polars LazyFrame for memory-efficient processing.
-
-    Supports both CSV and Parquet files.
+    Supports both CSV and Parquet files. Uses PyArrow engine for Parquet
+    to support AVX-only hardware (unlike Polars which requires AVX2).
     """
     if filepath.suffix == ".parquet":
-        lf = pl.scan_parquet(filepath)
+        df = pd.read_parquet(filepath, engine="pyarrow")
     else:
-        lf = pl.scan_csv(filepath, infer_schema_length=10000)
+        df = pd.read_csv(filepath, dtype_backend="numpy_nullable", low_memory=False)
 
-    return _normalize(lf)
-
-
-def load_claims_for_provider(filepath: Path, npi: str) -> pl.DataFrame:
-    """Load all rows for a specific billing provider (collected, not lazy)."""
-    lf = load_claims(filepath)
-    return lf.filter(pl.col("npi") == npi).collect()
+    return _normalize(df)
 
 
-def get_all_providers(filepath: Path) -> pl.DataFrame:
+def load_claims_for_provider(filepath: Path, npi: str) -> pd.DataFrame:
+    """Load all rows for a specific billing provider."""
+    if filepath.suffix == ".parquet":
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        schema = pq.read_schema(filepath)
+        npi_col = "BILLING_PROVIDER_NPI_NUM" if "BILLING_PROVIDER_NPI_NUM" in schema.names else "npi"
+        # HHS parquet stores NPI as int64; cast the filter value to match
+        filter_val: int | str = int(npi) if pa.types.is_integer(schema.field(npi_col).type) else npi
+        table = pq.read_table(filepath, filters=[(npi_col, "=", filter_val)])
+        return _normalize(table.to_pandas())
+
+    df = load_claims(filepath)
+    return df[df["npi"] == npi].copy().reset_index(drop=True)
+
+
+def get_all_providers(filepath: Path) -> pd.DataFrame:
     """Get a unique list of billing provider NPIs from the dataset."""
-    lf = load_claims(filepath)
-    return lf.select("npi").unique().collect()
+    df = load_claims(filepath)
+    return df[["npi"]].drop_duplicates().reset_index(drop=True)
 
 
 def preprocess(raw_filepath: Path) -> tuple[Path, Path]:
@@ -79,32 +86,32 @@ def preprocess(raw_filepath: Path) -> tuple[Path, Path]:
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     click.echo(f"Reading raw dataset: {raw_filepath}")
-    lf = load_claims(raw_filepath)
+    df = load_claims(raw_filepath)
 
     # --- Provider monthly summary ---
     click.echo("Aggregating provider monthly summaries...")
+    agg_dict: dict = {"total_claims": "sum", "total_paid": "sum"}
+    if "beneficiaries" in df.columns:
+        agg_dict["beneficiaries"] = "sum"
     monthly = (
-        lf.group_by(["npi", "service_month"])
-        .agg([
-            pl.col("total_claims").sum().alias("total_claims"),
-            pl.col("total_paid").sum().alias("total_paid"),
-            pl.col("beneficiaries").sum().alias("beneficiaries"),
-        ])
-        .sort(["npi", "service_month"])
-        .collect()
+        df.groupby(["npi", "service_month"], as_index=False)
+        .agg(agg_dict)
+        .sort_values(["npi", "service_month"])
+        .reset_index(drop=True)
     )
-    monthly.write_parquet(PROVIDER_MONTHLY_FILE)
+    monthly.to_parquet(PROVIDER_MONTHLY_FILE, engine="pyarrow", index=False)
     click.echo(f"  -> {PROVIDER_MONTHLY_FILE} ({PROVIDER_MONTHLY_FILE.stat().st_size / 1e6:.1f} MB, {len(monthly):,} rows)")
 
     # --- Provider procedure summary (for consistency detection) ---
     click.echo("Aggregating provider procedure summaries...")
     procedure = (
-        lf.group_by(["npi", "total_paid"])
-        .agg(pl.len().alias("row_count"))
-        .sort(["npi", "total_paid"])
-        .collect()
+        df.groupby(["npi", "total_paid"])
+        .size()
+        .reset_index(name="row_count")
+        .sort_values(["npi", "total_paid"])
+        .reset_index(drop=True)
     )
-    procedure.write_parquet(PROVIDER_PROCEDURE_FILE)
+    procedure.to_parquet(PROVIDER_PROCEDURE_FILE, engine="pyarrow", index=False)
     click.echo(f"  -> {PROVIDER_PROCEDURE_FILE} ({PROVIDER_PROCEDURE_FILE.stat().st_size / 1e6:.1f} MB, {len(procedure):,} rows)")
 
     return PROVIDER_MONTHLY_FILE, PROVIDER_PROCEDURE_FILE

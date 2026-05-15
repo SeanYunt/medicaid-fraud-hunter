@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import click
-import polars as pl
+import pandas as pd
 
 from data.loader import load_claims
 from data.models import RedFlag, RedFlagType, ScanResult
@@ -48,51 +48,44 @@ def scan_all(
     If monthly_path and procedure_path are provided, uses the small preprocessed
     files instead of reading the full raw dataset.
     """
-    code_df: pl.DataFrame | None = None
+    code_df: pd.DataFrame | None = None
 
     if monthly_path and procedure_path:
         click.echo("Loading preprocessed summaries...")
-        monthly_df = pl.read_parquet(monthly_path)
-        procedure_df = pl.read_parquet(procedure_path)
+        monthly_df = pd.read_parquet(monthly_path, engine="pyarrow")
+        procedure_df = pd.read_parquet(procedure_path, engine="pyarrow")
     else:
         click.echo("Loading raw dataset (consider running 'preprocess' first)...")
-        lf = load_claims(filepath)
+        df = load_claims(filepath)
         click.echo("Aggregating monthly data...")
         monthly_df = (
-            lf.group_by(["npi", "service_month"])
-            .agg([
-                pl.col("total_claims").sum().alias("total_claims"),
-                pl.col("total_paid").sum().alias("total_paid"),
-            ])
-            .collect()
+            df.groupby(["npi", "service_month"], as_index=False)
+            .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
         click.echo("Aggregating procedure data...")
         procedure_df = (
-            lf.group_by(["npi", "total_paid"])
-            .agg(pl.len().alias("row_count"))
-            .collect()
+            df.groupby(["npi", "total_paid"])
+            .size()
+            .reset_index(name="row_count")
         )
         click.echo("Aggregating procedure code data...")
         code_df = (
-            lf.group_by(["npi", "procedure_code", "service_month"])
-            .agg([
-                pl.col("total_claims").sum(),
-                pl.col("total_paid").sum(),
-            ])
-            .collect()
+            df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
+            .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
 
     # Filter out providers with total paid below minimum threshold
     provider_totals = (
-        monthly_df.group_by("npi")
-        .agg(pl.col("total_paid").sum().alias("total_paid_sum"))
+        monthly_df.groupby("npi", as_index=False)["total_paid"]
+        .sum()
+        .rename(columns={"total_paid": "total_paid_sum"})
     )
     qualifying_npis = (
-        provider_totals.filter(pl.col("total_paid_sum") >= MIN_TOTAL_PAID)["npi"].to_list()
+        provider_totals[provider_totals["total_paid_sum"] >= MIN_TOTAL_PAID]["npi"].tolist()
     )
-    excluded = provider_totals.height - len(qualifying_npis)
-    monthly_df = monthly_df.filter(pl.col("npi").is_in(qualifying_npis))
-    procedure_df = procedure_df.filter(pl.col("npi").is_in(qualifying_npis))
+    excluded = len(provider_totals) - len(qualifying_npis)
+    monthly_df = monthly_df[monthly_df["npi"].isin(qualifying_npis)].copy()
+    procedure_df = procedure_df[procedure_df["npi"].isin(qualifying_npis)].copy()
     click.echo(f"Filtered to {len(qualifying_npis):,} providers with >=${MIN_TOTAL_PAID:,} total paid "
                f"({excluded:,} excluded)")
 
@@ -156,12 +149,12 @@ def scan_all(
     return results
 
 
-def _detect_volume_impossibility(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_volume_impossibility(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with impossibly high claim counts in a single month."""
-    flagged = monthly_df.filter(pl.col("total_claims") > MAX_CLAIMS_PER_MONTH)
+    flagged = monthly_df[monthly_df["total_claims"] > MAX_CLAIMS_PER_MONTH]
 
     flags: dict[str, list[RedFlag]] = {}
-    for row in flagged.iter_rows(named=True):
+    for _, row in flagged.iterrows():
         npi = str(row["npi"])
         count = row["total_claims"]
         severity = min(1.0, count / (MAX_CLAIMS_PER_MONTH * 3))
@@ -176,32 +169,29 @@ def _detect_volume_impossibility(monthly_df: pl.DataFrame) -> dict[str, list[Red
     return flags
 
 
-def _detect_revenue_outliers(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_revenue_outliers(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers whose revenue per claim is far above peers.
 
     Uses median and MAD (median absolute deviation) instead of mean/std
     to resist skew from large providers distorting the baseline.
     """
     provider_totals = (
-        monthly_df.group_by("npi")
-        .agg([
-            pl.col("total_paid").sum().alias("total_paid_sum"),
-            pl.col("total_claims").sum().alias("total_claims_sum"),
-        ])
-        .filter(pl.col("total_claims_sum") > 0)
-        .with_columns(
-            (pl.col("total_paid_sum") / pl.col("total_claims_sum")).alias("paid_per_claim")
-        )
+        monthly_df.groupby("npi", as_index=False)
+        .agg(total_paid_sum=("total_paid", "sum"), total_claims_sum=("total_claims", "sum"))
+    )
+    provider_totals = provider_totals[provider_totals["total_claims_sum"] > 0].copy()
+    provider_totals["paid_per_claim"] = (
+        provider_totals["total_paid_sum"] / provider_totals["total_claims_sum"]
     )
 
-    if provider_totals.is_empty():
+    if provider_totals.empty:
         return {}
 
     median_val = provider_totals["paid_per_claim"].median()
     # MAD = median of absolute deviations from the median
     mad_val = (provider_totals["paid_per_claim"] - median_val).abs().median()
 
-    if mad_val is None or mad_val == 0:
+    if pd.isna(mad_val) or mad_val == 0:
         return {}
 
     # Scale MAD to be comparable to std dev for normal distributions
@@ -209,7 +199,7 @@ def _detect_revenue_outliers(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag
     scaled_mad = mad_val * 1.4826
 
     flags: dict[str, list[RedFlag]] = {}
-    for row in provider_totals.iter_rows(named=True):
+    for _, row in provider_totals.iterrows():
         modified_zscore = (row["paid_per_claim"] - median_val) / scaled_mad
         if modified_zscore > REVENUE_ZSCORE_THRESHOLD:
             npi = str(row["npi"])
@@ -233,21 +223,21 @@ def _detect_revenue_outliers(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag
     return flags
 
 
-def _detect_billing_spikes(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_billing_spikes(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with sudden monthly billing spikes vs their own history."""
     flags: dict[str, list[RedFlag]] = {}
 
-    for npi in monthly_df["npi"].unique().to_list():
-        provider_monthly = monthly_df.filter(pl.col("npi") == npi).sort("service_month")
+    for npi in monthly_df["npi"].unique():
+        provider_monthly = monthly_df[monthly_df["npi"] == npi].sort_values("service_month")
         if len(provider_monthly) < 3:
             continue
 
-        totals = provider_monthly["total_paid"].to_list()
+        totals = provider_monthly["total_paid"].tolist()
         avg = sum(totals) / len(totals)
         if avg == 0:
             continue
 
-        for row in provider_monthly.iter_rows(named=True):
+        for _, row in provider_monthly.iterrows():
             ratio = row["total_paid"] / avg
             if ratio > SPIKE_MULTIPLIER:
                 severity = min(1.0, ratio / 10.0)
@@ -262,31 +252,29 @@ def _detect_billing_spikes(monthly_df: pl.DataFrame) -> dict[str, list[RedFlag]]
     return flags
 
 
-def _detect_nos_concentration(code_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_nos_concentration(code_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers where NOS/miscellaneous codes make up a large share of billing.
 
     NOS codes lack specificity and are a classic vehicle for DME and supply fraud —
     they obscure what was actually billed and are harder to audit than named items.
     """
     provider_totals = (
-        code_df.group_by("npi")
-        .agg(pl.col("total_paid").sum().alias("total_paid_all"))
+        code_df.groupby("npi", as_index=False)["total_paid"]
+        .sum()
+        .rename(columns={"total_paid": "total_paid_all"})
     )
     nos_totals = (
-        code_df.filter(pl.col("procedure_code").is_in(NOS_CODES))
-        .group_by("npi")
-        .agg(pl.col("total_paid").sum().alias("nos_paid"))
+        code_df[code_df["procedure_code"].isin(NOS_CODES)]
+        .groupby("npi", as_index=False)["total_paid"]
+        .sum()
+        .rename(columns={"total_paid": "nos_paid"})
     )
-    merged = (
-        provider_totals.join(nos_totals, on="npi", how="inner")
-        .with_columns(
-            (pl.col("nos_paid") / pl.col("total_paid_all")).alias("nos_ratio")
-        )
-        .filter(pl.col("nos_ratio") >= NOS_CONCENTRATION_THRESHOLD)
-    )
+    merged = provider_totals.merge(nos_totals, on="npi", how="inner")
+    merged["nos_ratio"] = merged["nos_paid"] / merged["total_paid_all"]
+    merged = merged[merged["nos_ratio"] >= NOS_CONCENTRATION_THRESHOLD]
 
     flags: dict[str, list[RedFlag]] = {}
-    for row in merged.iter_rows(named=True):
+    for _, row in merged.iterrows():
         npi = str(row["npi"])
         ratio = row["nos_ratio"]
         nos_paid = row["nos_paid"]
@@ -309,41 +297,37 @@ def _detect_nos_concentration(code_df: pl.DataFrame) -> dict[str, list[RedFlag]]
     return flags
 
 
-def _detect_upcoding_trajectory(code_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_upcoding_trajectory(code_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers with a systematic shift toward higher-reimbursed E&M codes over time.
 
     Compares the weighted average E&M code level in the first half of the provider's
     billing history vs the second half. A significant upward shift (with no change in
     patient volume) is a signature of deliberate upcoding rather than clinical change.
     """
-    em_df = code_df.filter(pl.col("procedure_code").is_in(set(EM_CODES.keys())))
+    em_df = code_df[code_df["procedure_code"].isin(set(EM_CODES.keys()))].copy()
 
-    if em_df.is_empty():
+    if em_df.empty:
         return {}
 
-    em_df = em_df.with_columns(
-        pl.col("procedure_code")
-        .map_elements(lambda c: EM_CODES.get(c, 0), return_dtype=pl.Int32)
-        .alias("code_level")
-    )
+    em_df["code_level"] = em_df["procedure_code"].map(lambda c: EM_CODES.get(c, 0)).astype(int)
 
     flags: dict[str, list[RedFlag]] = {}
-    for npi in em_df["npi"].unique().to_list():
-        provider_em = em_df.filter(pl.col("npi") == npi).sort("service_month")
+    for npi in em_df["npi"].unique():
+        provider_em = em_df[em_df["npi"] == npi].sort_values("service_month")
 
         total_claims = provider_em["total_claims"].sum()
         if total_claims < UPCODING_MIN_CLAIMS:
             continue
 
-        months = provider_em["service_month"].unique().sort().to_list()
+        months = sorted(provider_em["service_month"].unique())
         if len(months) < 6:
             continue
 
         mid = len(months) // 2
-        early = provider_em.filter(pl.col("service_month").is_in(months[:mid]))
-        late = provider_em.filter(pl.col("service_month").is_in(months[mid:]))
+        early = provider_em[provider_em["service_month"].isin(months[:mid])]
+        late = provider_em[provider_em["service_month"].isin(months[mid:])]
 
-        def weighted_avg(df: pl.DataFrame) -> float:
+        def weighted_avg(df: pd.DataFrame) -> float:
             total = df["total_claims"].sum()
             if total == 0:
                 return 0.0
@@ -377,29 +361,32 @@ def _detect_upcoding_trajectory(code_df: pl.DataFrame) -> dict[str, list[RedFlag
     return flags
 
 
-def _detect_suspicious_consistency(procedure_df: pl.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_suspicious_consistency(procedure_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
     """Flag providers where an unusually high fraction of rows share the same paid amount."""
     # Exclude $0 rows — uniform zeros are a data artifact, not copy-paste fraud
-    procedure_df = procedure_df.filter(pl.col("total_paid") != 0)
+    procedure_df = procedure_df[procedure_df["total_paid"] != 0].copy().reset_index(drop=True)
 
-    provider_stats = (
-        procedure_df
-        .sort("row_count", descending=True)
-        .group_by("npi")
-        .agg([
-            pl.col("row_count").sum().alias("total_rows"),
-            pl.col("row_count").first().alias("top_amount_count"),
-            pl.col("total_paid").first().alias("top_amount"),
-        ])
-        .filter(pl.col("total_rows") >= CONSISTENCY_MIN_ROWS)
-        .with_columns(
-            (pl.col("top_amount_count") / pl.col("total_rows")).alias("consistency_ratio")
-        )
-        .filter(pl.col("consistency_ratio") > CONSISTENCY_RATIO_THRESHOLD)
+    if procedure_df.empty:
+        return {}
+
+    # For each NPI: total row count, and the most-frequent paid amount with its count
+    totals = procedure_df.groupby("npi")["row_count"].sum().reset_index(name="total_rows")
+    idx = procedure_df.groupby("npi")["row_count"].idxmax()
+    top_rows = (
+        procedure_df.loc[idx.values, ["npi", "total_paid", "row_count"]]
+        .copy()
+        .rename(columns={"row_count": "top_amount_count", "total_paid": "top_amount"})
     )
 
+    provider_stats = totals.merge(top_rows, on="npi")
+    provider_stats = provider_stats[provider_stats["total_rows"] >= CONSISTENCY_MIN_ROWS].copy()
+    provider_stats["consistency_ratio"] = (
+        provider_stats["top_amount_count"] / provider_stats["total_rows"]
+    )
+    provider_stats = provider_stats[provider_stats["consistency_ratio"] > CONSISTENCY_RATIO_THRESHOLD]
+
     flags: dict[str, list[RedFlag]] = {}
-    for row in provider_stats.iter_rows(named=True):
+    for _, row in provider_stats.iterrows():
         npi = str(row["npi"])
         ratio = row["consistency_ratio"]
         top_amount = row["top_amount"]

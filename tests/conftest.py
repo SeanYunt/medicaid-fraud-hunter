@@ -4,7 +4,7 @@ import csv
 from datetime import date
 from pathlib import Path
 
-import polars as pl
+import pandas as pd
 import pytest
 
 from data.loader import load_claims
@@ -92,25 +92,21 @@ def sample_csv(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def monthly_df(sample_csv: Path) -> pl.DataFrame:
+def monthly_df(sample_csv: Path) -> pd.DataFrame:
     """Provider+month aggregation matching the preprocessed monthly file."""
-    lf = load_claims(sample_csv)
+    df = load_claims(sample_csv)
     return (
-        lf.group_by(["npi", "service_month"])
-        .agg([
-            pl.col("total_claims").sum().alias("total_claims"),
-            pl.col("total_paid").sum().alias("total_paid"),
-        ])
-        .collect()
+        df.groupby(["npi", "service_month"], as_index=False)
+        .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
     )
 
 
 @pytest.fixture
-def procedure_df(sample_csv: Path) -> pl.DataFrame:
+def procedure_df(sample_csv: Path) -> pd.DataFrame:
     """Provider+paid_amount aggregation matching the preprocessed procedure file."""
-    lf = load_claims(sample_csv)
+    df = load_claims(sample_csv)
     return (
-        lf.group_by(["npi", "total_paid"])
-        .agg(pl.len().alias("row_count"))
-        .collect()
+        df.groupby(["npi", "total_paid"])
+        .size()
+        .reset_index(name="row_count")
     )

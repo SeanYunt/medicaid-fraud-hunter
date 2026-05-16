@@ -17,11 +17,13 @@ def build_dossier(
     """Build a comprehensive dossier for a specific provider."""
     click.echo(f"Building dossier for provider {npi}...")
 
+    click.echo("  Loading provider claims from dataset...")
     claims = load_claims_for_provider(filepath, npi)
     if claims.empty:
         raise click.ClickException(f"No claims found for NPI {npi}")
+    click.echo(f"  Loaded {len(claims):,} rows for NPI {npi}")
 
-    click.echo(f"Looking up NPI {npi} in NPPES registry...")
+    click.echo("  Looking up NPI in NPPES registry...")
     npi_info = lookup_npi(npi)
     provider = Provider(
         npi=npi,
@@ -38,8 +40,11 @@ def build_dossier(
     else:
         click.echo("  Warning: NPI not found in NPPES registry")
 
+    click.echo("  Summarizing claims...")
     claims_summary = _summarize_claims(claims)
+    click.echo("  Computing peer comparison...")
     peer_comparison = _compare_to_peers(filepath, npi, claims, monthly_path=monthly_path)
+    click.echo("  Building billing timeline...")
     timeline = _build_timeline(claims)
 
     if scan_result is None:

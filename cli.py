@@ -35,23 +35,39 @@ def preprocess_cmd(data_path: str | None):
               help="Path to dataset (auto-detected if not specified)")
 @click.option("--top", default=50, type=int,
               help="Number of top results to display")
-def scan(threshold: float, data_path: str | None, top: int):
+@click.option("--state", default=None, metavar="STATE",
+              help="Filter to providers in this state (2-letter abbreviation, e.g. WV). "
+                   "Requires NPPES zip in data/raw/.")
+def scan(threshold: float, data_path: str | None, top: int, state: str | None):
     """Scan the dataset for suspicious providers."""
     filepath = Path(data_path) if data_path else find_dataset()
 
-    # Only use preprocessed files when no explicit data-path was given
-    preprocessed = find_preprocessed() if not data_path else None
+    preprocessed = find_preprocessed()
     if preprocessed:
         monthly_path, procedure_path = preprocessed
         click.echo(f"Using preprocessed data from {monthly_path.parent}")
+        click.echo(f"Scanning: {filepath}")
     else:
         monthly_path = procedure_path = None
         click.echo(f"Scanning: {filepath}")
-        if not data_path:
-            click.echo("Tip: Run 'python cli.py preprocess' first for much faster scans.")
+        click.echo("Tip: Run 'python cli.py preprocess' first for much faster scans.")
+
+    state_npis: set[str] | None = None
+    if state:
+        state = state.upper().strip()
+        from data.nppes import find_nppes_zip, load_npi_state_map
+        try:
+            nppes_path = find_nppes_zip()
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e))
+        click.echo(f"Loading NPPES state filter for {state}...")
+        npi_state_map = load_npi_state_map(nppes_path)
+        state_npis = {npi for npi, s in npi_state_map.items() if s == state}
+        click.echo(f"Found {len(state_npis):,} providers registered in {state}")
 
     results = scan_all(filepath, threshold=threshold,
-                       monthly_path=monthly_path, procedure_path=procedure_path)
+                       monthly_path=monthly_path, procedure_path=procedure_path,
+                       state_npis=state_npis)
 
     # Save full results to CSV
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -127,6 +143,57 @@ def profile(npi: str, data_path: str | None):
         click.echo(f"\nPeer Ranking: {pc['provider_percentile']}th percentile")
 
     click.echo(f"{'=' * 60}")
+
+
+@cli.command()
+@click.argument("query")
+@click.option("--state", default=None, metavar="STATE",
+              help="Narrow results to a specific state (2-letter abbreviation, e.g. WV)")
+def lookup(query: str, state: str | None):
+    """Search the NPPES provider registry by name or NPI.
+
+    QUERY can be a provider name (case-insensitive substring match) or a
+    10-digit NPI for an exact lookup.
+
+    \b
+    Examples:
+      python cli.py lookup "Acme Health Clinic"
+      python cli.py lookup "Acme Health Clinic" --state WV
+      python cli.py lookup 1234567890
+    """
+    from data.nppes import find_nppes_zip, search_providers
+
+    try:
+        nppes_path = find_nppes_zip()
+    except FileNotFoundError as e:
+        raise click.ClickException(str(e))
+
+    is_npi = query.strip().isdigit() and len(query.strip()) == 10
+    if is_npi:
+        click.echo(f"Looking up NPI {query.strip()}...")
+    else:
+        location = f" in {state.upper()}" if state else ""
+        click.echo(f"Searching for '{query}'{location}...")
+
+    results = search_providers(nppes_path, query, state=state)
+
+    if not results:
+        click.echo("No providers found.")
+        return
+
+    click.echo(f"\nFound {len(results)} provider(s):\n")
+    click.echo("-" * 70)
+    for r in results:
+        click.echo(f"  NPI:      {r['npi']}")
+        if r["name"]:
+            click.echo(f"  Name:     {r['name']}")
+        addr_parts = [p for p in [r["address"], r["city"], r["state"], r["zip"]] if p]
+        if addr_parts:
+            click.echo(f"  Address:  {', '.join(addr_parts)}")
+        if r["taxonomy"]:
+            click.echo(f"  Taxonomy: {r['taxonomy']}")
+        click.echo(f"  → python cli.py profile {r['npi']}  to generate dossier")
+        click.echo()
 
 
 def _load_scan_result(npi: str):

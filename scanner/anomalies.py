@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import click
@@ -42,37 +43,52 @@ def scan_all(
     threshold: float = 0.3,
     monthly_path: Path | None = None,
     procedure_path: Path | None = None,
+    state_npis: set[str] | None = None,
 ) -> list[ScanResult]:
     """Scan the dataset and return providers with anomaly scores above threshold.
 
     If monthly_path and procedure_path are provided, uses the small preprocessed
     files instead of reading the full raw dataset.
+
+    If state_npis is provided, only providers whose NPI appears in that set are
+    included in output.  Revenue-outlier detection still uses national statistics
+    so a state provider is measured against the full national peer group.
     """
     code_df: pd.DataFrame | None = None
 
     if monthly_path and procedure_path:
-        click.echo("Loading preprocessed summaries...")
+        t0 = time.time()
+        click.echo("Loading preprocessed summaries...", nl=False)
         monthly_df = pd.read_parquet(monthly_path, engine="pyarrow")
         procedure_df = pd.read_parquet(procedure_path, engine="pyarrow")
+        click.echo(f" done ({time.time() - t0:.1f}s)")
     else:
-        click.echo("Loading raw dataset (consider running 'preprocess' first)...")
+        t0 = time.time()
+        click.echo("Loading raw dataset (consider running 'preprocess' first)...", nl=False)
         df = load_claims(filepath)
-        click.echo("Aggregating monthly data...")
+        click.echo(f" done ({time.time() - t0:.1f}s)")
+        t0 = time.time()
+        click.echo("Aggregating monthly data...", nl=False)
         monthly_df = (
             df.groupby(["npi", "service_month"], as_index=False)
             .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
-        click.echo("Aggregating procedure data...")
+        click.echo(f" done ({time.time() - t0:.1f}s)")
+        t0 = time.time()
+        click.echo("Aggregating procedure data...", nl=False)
         procedure_df = (
             df.groupby(["npi", "total_paid"])
             .size()
             .reset_index(name="row_count")
         )
-        click.echo("Aggregating procedure code data...")
+        click.echo(f" done ({time.time() - t0:.1f}s)")
+        t0 = time.time()
+        click.echo("Aggregating procedure code data...", nl=False)
         code_df = (
             df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
             .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
+        click.echo(f" done ({time.time() - t0:.1f}s)")
 
     # Filter out providers with total paid below minimum threshold
     provider_totals = (
@@ -89,29 +105,65 @@ def scan_all(
     click.echo(f"Filtered to {len(qualifying_npis):,} providers with >=${MIN_TOTAL_PAID:,} total paid "
                f"({excluded:,} excluded)")
 
+    # national_monthly_df is used as the baseline for revenue-outlier z-scores so
+    # that state providers are compared against all national peers, not just peers
+    # within the same state.
+    national_monthly_df = monthly_df
+
+    if state_npis is not None:
+        act_monthly = monthly_df[monthly_df["npi"].isin(state_npis)].copy()
+        act_procedure = procedure_df[procedure_df["npi"].isin(state_npis)].copy()
+        if code_df is not None:
+            code_df = code_df[code_df["npi"].isin(state_npis)].copy()
+        click.echo(f"Filtered to {act_monthly['npi'].nunique():,} providers in state scope")
+    else:
+        act_monthly = monthly_df
+        act_procedure = procedure_df
+
+    num_detectors = 4 if code_df is None else 6
     click.echo("Running anomaly detection...")
 
-    # --- Volume impossibility ---
-    volume_flags = _detect_volume_impossibility(monthly_df)
+    # --- Volume impossibility (fixed threshold — safe on filtered data) ---
+    t0 = time.time()
+    click.echo(f"  [1/{num_detectors}] Volume impossibility detector...", nl=False)
+    volume_flags = _detect_volume_impossibility(act_monthly)
+    click.echo(f" done ({time.time() - t0:.1f}s, {len(volume_flags):,} flagged)")
 
-    # --- Revenue outliers ---
-    revenue_flags = _detect_revenue_outliers(monthly_df)
+    # --- Revenue outliers (national baseline, state-filtered output) ---
+    t0 = time.time()
+    click.echo(f"  [2/{num_detectors}] Revenue outlier detector...", nl=False)
+    revenue_flags = _detect_revenue_outliers(national_monthly_df, state_npis=state_npis)
+    click.echo(f" done ({time.time() - t0:.1f}s, {len(revenue_flags):,} flagged)")
 
-    # --- Billing spikes ---
-    spike_flags = _detect_billing_spikes(monthly_df)
+    # --- Billing spikes (provider-relative — safe on filtered data) ---
+    t0 = time.time()
+    click.echo(f"  [3/{num_detectors}] Billing spike detector...", nl=False)
+    spike_flags = _detect_billing_spikes(act_monthly)
+    click.echo(f" done ({time.time() - t0:.1f}s, {len(spike_flags):,} flagged)")
 
-    # --- Suspicious consistency ---
-    consistency_flags = _detect_suspicious_consistency(procedure_df)
+    # --- Suspicious consistency (provider-specific — safe on filtered data) ---
+    t0 = time.time()
+    click.echo(f"  [4/{num_detectors}] Suspicious consistency detector...", nl=False)
+    consistency_flags = _detect_suspicious_consistency(act_procedure)
+    click.echo(f" done ({time.time() - t0:.1f}s, {len(consistency_flags):,} flagged)")
 
     # --- Scheme-specific detectors (require raw code-level data) ---
     if code_df is not None:
+        t0 = time.time()
+        click.echo(f"  [5/{num_detectors}] NOS concentration detector...", nl=False)
         nos_flags = _detect_nos_concentration(code_df)
+        click.echo(f" done ({time.time() - t0:.1f}s, {len(nos_flags):,} flagged)")
+
+        t0 = time.time()
+        click.echo(f"  [6/{num_detectors}] Upcoding trajectory detector...", nl=False)
         upcoding_flags = _detect_upcoding_trajectory(code_df)
+        click.echo(f" done ({time.time() - t0:.1f}s, {len(upcoding_flags):,} flagged)")
     else:
         nos_flags = {}
         upcoding_flags = {}
 
     # Merge all flags by NPI
+    t0 = time.time()
     all_npis = (set(volume_flags) | set(revenue_flags) | set(spike_flags)
                 | set(consistency_flags) | set(nos_flags) | set(upcoding_flags))
 
@@ -145,7 +197,8 @@ def scan_all(
             results.append(result)
 
     results.sort(key=lambda r: r.overall_score, reverse=True)
-    click.echo(f"Found {len(results)} suspicious providers above threshold {threshold}")
+    click.echo(f"Scored and ranked {len(all_npis):,} providers ({time.time() - t0:.1f}s)")
+    click.echo(f"Found {len(results):,} suspicious providers above threshold {threshold}")
     return results
 
 
@@ -169,11 +222,18 @@ def _detect_volume_impossibility(monthly_df: pd.DataFrame) -> dict[str, list[Red
     return flags
 
 
-def _detect_revenue_outliers(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
+def _detect_revenue_outliers(
+    monthly_df: pd.DataFrame,
+    state_npis: set[str] | None = None,
+) -> dict[str, list[RedFlag]]:
     """Flag providers whose revenue per claim is far above peers.
 
     Uses median and MAD (median absolute deviation) instead of mean/std
     to resist skew from large providers distorting the baseline.
+
+    When state_npis is provided, the national baseline (median/MAD) is still
+    computed from the full monthly_df, but flags are only emitted for NPIs that
+    appear in state_npis.
     """
     provider_totals = (
         monthly_df.groupby("npi", as_index=False)
@@ -200,9 +260,11 @@ def _detect_revenue_outliers(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag
 
     flags: dict[str, list[RedFlag]] = {}
     for _, row in provider_totals.iterrows():
+        npi = str(row["npi"])
+        if state_npis is not None and npi not in state_npis:
+            continue
         modified_zscore = (row["paid_per_claim"] - median_val) / scaled_mad
         if modified_zscore > REVENUE_ZSCORE_THRESHOLD:
-            npi = str(row["npi"])
             severity = min(1.0, modified_zscore / 10.0)
             flag = RedFlag(
                 flag_type=RedFlagType.REVENUE_OUTLIER,

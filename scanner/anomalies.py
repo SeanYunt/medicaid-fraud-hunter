@@ -286,30 +286,37 @@ def _detect_revenue_outliers(
 
 
 def _detect_billing_spikes(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers with sudden monthly billing spikes vs their own history."""
+    """Flag providers with sudden monthly billing spikes vs their own history.
+
+    Scale fix: replaced O(N²) Python loop (250K providers × full-frame boolean mask over
+    20M rows) with a single groupby aggregate + merge. O(N) at national scale.
+    """
+    # Compute per-provider month count and mean in one pass, then merge back
+    stats = (
+        monthly_df.groupby("npi", as_index=False)
+        .agg(_month_count=("total_paid", "count"), _avg=("total_paid", "mean"))
+    )
+    stats = stats[(stats["_month_count"] >= 3) & (stats["_avg"] > 0)]
+    if stats.empty:
+        return {}
+
+    df = monthly_df.merge(stats[["npi", "_avg"]], on="npi", how="inner")
+    df["_ratio"] = df["total_paid"] / df["_avg"]
+    spikes = df[df["_ratio"] > SPIKE_MULTIPLIER]
+
     flags: dict[str, list[RedFlag]] = {}
-
-    for npi in monthly_df["npi"].unique():
-        provider_monthly = monthly_df[monthly_df["npi"] == npi].sort_values("service_month")
-        if len(provider_monthly) < 3:
-            continue
-
-        totals = provider_monthly["total_paid"].tolist()
-        avg = sum(totals) / len(totals)
-        if avg == 0:
-            continue
-
-        for _, row in provider_monthly.iterrows():
-            ratio = row["total_paid"] / avg
-            if ratio > SPIKE_MULTIPLIER:
-                severity = min(1.0, ratio / 10.0)
-                flag = RedFlag(
-                    flag_type=RedFlagType.BILLING_SPIKE,
-                    description=f"Monthly paid ${row['total_paid']:,.2f} in {row['service_month']} is {ratio:.1f}x their average ${avg:,.2f}",
-                    severity=severity,
-                    evidence={"month": str(row["service_month"]), "amount": row["total_paid"], "ratio": round(ratio, 2)},
-                )
-                flags.setdefault(str(npi), []).append(flag)
+    for _, row in spikes.iterrows():
+        npi = str(row["npi"])
+        ratio = row["_ratio"]
+        avg = row["_avg"]
+        severity = min(1.0, ratio / 10.0)
+        flag = RedFlag(
+            flag_type=RedFlagType.BILLING_SPIKE,
+            description=f"Monthly paid ${row['total_paid']:,.2f} in {row['service_month']} is {ratio:.1f}x their average ${avg:,.2f}",
+            severity=severity,
+            evidence={"month": str(row["service_month"]), "amount": row["total_paid"], "ratio": round(ratio, 2)},
+        )
+        flags.setdefault(npi, []).append(flag)
 
     return flags
 
@@ -424,19 +431,31 @@ def _detect_upcoding_trajectory(code_df: pd.DataFrame) -> dict[str, list[RedFlag
 
 
 def _detect_suspicious_consistency(procedure_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers where an unusually high fraction of rows share the same paid amount."""
-    # Exclude $0 rows — uniform zeros are a data artifact, not copy-paste fraud
-    procedure_df = procedure_df[procedure_df["total_paid"] != 0].copy().reset_index(drop=True)
+    """Flag providers where an unusually high fraction of rows share the same paid amount.
 
-    if procedure_df.empty:
+    Scale fix: removed unnecessary .copy() of potentially 50M+ row DataFrame (caused
+    severe memory pressure at national scale), and replaced groupby().idxmax()+loc with
+    sort+drop_duplicates — avoids Python-level group iteration on object-dtype NPI keys.
+    """
+    # Exclude $0 rows — uniform zeros are a data artifact, not copy-paste fraud
+    df = procedure_df[procedure_df["total_paid"] != 0]
+
+    if df.empty:
         return {}
 
-    # For each NPI: total row count, and the most-frequent paid amount with its count
-    totals = procedure_df.groupby("npi")["row_count"].sum().reset_index(name="total_rows")
-    idx = procedure_df.groupby("npi")["row_count"].idxmax()
+    # For each NPI: total row count across all paid amounts
+    totals = (
+        df.groupby("npi", as_index=False)["row_count"]
+        .sum()
+        .rename(columns={"row_count": "total_rows"})
+    )
+
+    # Most-frequent paid amount per provider: sort descending so drop_duplicates
+    # keeps the highest-count row (first occurrence) for each NPI.
     top_rows = (
-        procedure_df.loc[idx.values, ["npi", "total_paid", "row_count"]]
-        .copy()
+        df.sort_values("row_count", ascending=False)
+        .drop_duplicates(subset="npi", keep="first")
+        [["npi", "total_paid", "row_count"]]
         .rename(columns={"row_count": "top_amount_count", "total_paid": "top_amount"})
     )
 

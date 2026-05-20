@@ -1,6 +1,47 @@
 # Medicaid Fraud Hunter
 
-A CLI tool that scans public HHS Medicaid provider spending data to flag potentially fraudulent billing patterns and generate investigation-ready PDF dossiers.
+**Open-source analytics for detecting Medicaid billing fraud using publicly available government data.**
+
+Medicaid fraud costs U.S. taxpayers an estimated **$100 billion per year**. This project uses public CMS datasets and statistical anomaly detection to surface providers whose billing patterns deviate sharply from their peers — generating investigation-ready PDF dossiers that can support enforcement actions, qui tam filings, and regulatory referrals.
+
+---
+
+## Business Value
+
+### Built on Public Data — No FOIA Required
+
+All analysis runs on datasets published by HHS/CMS at [data.cms.gov](https://data.cms.gov/). This means:
+
+- **Zero access barriers.** Any researcher, attorney, or investigator can reproduce results.
+- **Legally defensible sourcing.** Government-published data is admissible and credible.
+- **Scalable coverage.** Millions of provider records analyzed in minutes on a laptop.
+
+The tool is designed to do the statistical legwork that investigative teams would otherwise do manually — identifying the 0.1% of providers whose patterns warrant a closer look.
+
+### Aligned with the DOGE Medicaid Fraud Initiative
+
+In early 2025, DOGE launched an effort to crowdsource Medicaid fraud detection, explicitly inviting public submissions of suspected fraud leads. This tool is purpose-built for exactly that use case.
+
+> *"DOGE's attempt to crowdsource Medicaid fraud scrutiny raises important questions about the future of healthcare fraud enforcement."*
+> — [Health Law Advisor, 2025](https://www.healthlawadvisor.com/doges-attempt-to-crowdsource-medicaid-fraud-scrutiny-is-this-the-future-of-healthcare-fraud-investigations)
+
+The corroborating-evidence scoring model prioritizes providers where multiple independent analytical signals converge — the cases most likely to survive legal scrutiny and support a successful enforcement action.
+
+### Partnering with Investigators and Qui Tam Attorneys
+
+I am actively seeking partnerships with:
+
+- **Healthcare fraud investigators** (OIG, state Medicaid fraud units, private)
+- **Qui tam / False Claims Act attorneys** looking for data-driven lead generation
+- **Compliance officers** conducting internal audits
+
+If you are working a Medicaid fraud matter and want access to this analysis — or want to discuss applying it to a specific state, specialty, or date range — please reach out:
+
+**Sean Yunt** · [seanyunt@gmail.com](mailto:seanyunt@gmail.com)
+
+Under the False Claims Act, qui tam relators who bring fraud to light can recover 15–30% of government recoveries. Data-driven leads generated from public records are a legitimate and increasingly recognized basis for such actions.
+
+---
 
 ## Quick Start
 
@@ -24,30 +65,26 @@ python cli.py scan --top 50
 python cli.py profile <NPI>
 ```
 
+---
+
 ## Data Setup
 
-To get started, download the complete dataset (~2.8 GB):
-
-1. Go to [data.cms.gov](https://data.cms.gov/) and search for **"Medicaid Provider Spending"** (also listed under Medicare/Medicaid claims data).
-2. Download the Parquet or CSV export.
+1. Go to [data.cms.gov](https://data.cms.gov/) and search for **"Medicaid Provider Spending"**.
+2. Download the Parquet or CSV export (~2.8 GB).
 3. Place the file in `data/raw/`:
    ```
    data/raw/medicaid-provider-spending.parquet
    ```
    The tool auto-detects any `.parquet` or `.csv` file in that directory (largest file wins).
 
-4. Run preprocessing to build the fast-scan summaries:
+4. Run preprocessing to build fast-scan summaries:
    ```bash
    python cli.py preprocess
-   # or
-   docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter preprocess
    ```
 
 The `data/raw/` and `data/processed/` directories are excluded from git (see `.gitignore`).
 
-## Data Source
-
-Uses the [HHS Medicaid Provider Spending](https://data.cms.gov/) dataset (public). The raw file contains aggregated Medicaid claims with columns for provider NPIs, procedure codes, service months, beneficiary counts, claim counts, and payment amounts.
+---
 
 ## Anomaly Detectors
 
@@ -68,24 +105,26 @@ Providers are scored based on **corroborating evidence** from independent detect
 
 This prioritizes providers where multiple independent analytical methods point to the same conclusion — the cases most likely to hold up under investigation.
 
+---
+
 ## Pipeline Commands
 
 ### `preprocess`
 
 Reads the raw dataset once and writes two small summary parquet files (~1 MB combined), eliminating repeated disk I/O on the full file.
 
+### `scan`
+
+Runs all four anomaly detectors and outputs a ranked list of suspicious providers to `output/scan_results.csv`.
+
+Options:
+- `--threshold` (default 0.3): Minimum anomaly score to include (0.0–1.0)
+- `--top` (default 50): Number of top results to display
+- `--data-path`: Path to raw dataset (auto-detected if not specified)
+
 ### `spark-scan`
 
 Same as `scan` but executes via PySpark in `local[*]` mode. Produces identical results and writes to `output/spark_scan_results.csv`. Designed to run on a cluster as data volume grows.
-
-### `scan`
-
-Runs all four anomaly detectors and outputs a ranked list of suspicious providers. Results are saved to `output/scan_results.csv`.
-
-Options:
-- `--threshold` (default 0.3): Minimum anomaly score to include (0.0-1.0)
-- `--top` (default 50): Number of top results to display
-- `--data-path`: Path to raw dataset (auto-detected if not specified)
 
 ### `profile <NPI>`
 
@@ -97,6 +136,8 @@ Generates a comprehensive PDF dossier for a specific provider including:
 
 Output: `output/dossiers/dossier_<NPI>_<timestamp>.pdf`
 
+---
+
 ## Testing
 
 ```bash
@@ -107,7 +148,9 @@ python -m pytest tests/ -v
 docker run --rm --entrypoint python medicaid-fraud-hunter -m pytest tests/ -v
 ```
 
-27 tests covering all detectors, data loading, dossier generation, and PDF output using synthetic test fixtures.
+27 tests covering all detectors, data loading, dossier generation, and PDF output.
+
+---
 
 ## Tech Stack
 

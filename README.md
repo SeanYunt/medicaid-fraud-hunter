@@ -154,7 +154,7 @@ docker run --rm --entrypoint python medicaid-fraud-hunter -m pytest tests/ -v
 
 ## Tech Stack
 
-- **Polars** — fast, memory-efficient dataframe processing with lazy evaluation
+- **Pandas + PyArrow** — dataframe processing and Parquet I/O (migrated from Polars for broader CPU compatibility)
 - **PySpark** — distributed-ready anomaly detection (`spark-scan`); runs locally via `local[*]`
 - **Click** — CLI framework
 - **ReportLab** — PDF generation

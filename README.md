@@ -37,7 +37,7 @@ I am actively seeking partnerships with:
 
 If you are working a Medicaid fraud matter and want access to this analysis — or want to discuss applying it to a specific state, specialty, or date range — please reach out:
 
-**Sean Yunt** · [seanyunt@gmail.com](mailto:seanyunt@gmail.com)
+**Sean Yunt** · [sean@blackdiamondconsulting.ai](mailto:sean@blackdiamondconsulting.ai)
 
 Under the False Claims Act, qui tam relators who bring fraud to light can recover 15–30% of government recoveries. Data-driven leads generated from public records are a legitimate and increasingly recognized basis for such actions.
 

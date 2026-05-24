@@ -45,7 +45,16 @@ Under the False Claims Act, qui tam relators who bring fraud to light can recove
 
 ## Quick Start
 
-**With Docker (recommended):**
+**Web UI (recommended):**
+
+```bash
+# Place your data file in data/raw/ first (see Data Setup below)
+docker compose up -d
+```
+
+Then open `http://<server>:8084` — the UI provides Scan, Profile, Lookup, and Dossiers tabs.
+
+**CLI with Docker:**
 
 ```bash
 docker build -t medicaid-fraud-hunter .
@@ -55,7 +64,7 @@ docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medica
 docker run --rm -v "${PWD}/data:/app/data" -v "${PWD}/output:/app/output" medicaid-fraud-hunter profile <NPI>
 ```
 
-**Without Docker:**
+**CLI without Docker:**
 
 ```bash
 pip install -r requirements.txt
@@ -88,22 +97,26 @@ The `data/raw/` and `data/processed/` directories are excluded from git (see `.g
 
 ## Anomaly Detectors
 
+Six independent detectors run against every qualifying provider (≥$100,000 total paid):
+
 | Detector | What It Catches | Method |
 |---|---|---|
 | **Volume Impossibility** | >1,500 claims in a single month | Hard threshold on monthly claim count |
-| **Revenue Outlier** | Abnormally high revenue per claim | Median/MAD comparison across all providers |
-| **Billing Spike** | Sudden surge in a provider's own billing | Monthly paid vs provider's own average (5x+) |
-| **Suspicious Consistency** | >90% of billing rows at identical dollar amount | Consistency ratio on non-zero paid amounts |
+| **Revenue Outlier** | Abnormally high revenue per claim | Median/MAD modified z-score vs national peers |
+| **Billing Spike** | Sudden surge vs provider's own history | Monthly paid vs provider's own rolling average (5x+) |
+| **Suspicious Consistency** | One procedure dominates billing at a robotically uniform per-claim rate | Single code ≥70% of total paid + rate CV <8% across ≥3 months |
+| **NOS Code Concentration** | >25% of billing under vague "not otherwise specified" codes | Ratio of NOS/miscellaneous HCPCS codes to total paid |
+| **Upcoding Trajectory** | Systematic shift toward higher-reimbursed E&M codes over time | Weighted average E&M level in early vs late billing periods (≥50 claims, ≥6 months) |
 
 ## Scoring
 
-Providers are scored based on **corroborating evidence** from independent detectors, not raw flag count:
+Providers are scored on **corroborating evidence** from independent detectors. Scheme-specific detectors (NOS concentration, upcoding trajectory) carry extra weight because they represent a named fraud pattern rather than a statistical outlier:
 
-- 1 detector fires: max **70%** score
-- 2 detectors fire: max **90%** score
-- 3+ detectors fire: **100%** score
+```
+score = min(1.0, max_severity × 0.4 + distinct_types × 0.15 + scheme_types × 0.2)
+```
 
-This prioritizes providers where multiple independent analytical methods point to the same conclusion — the cases most likely to hold up under investigation.
+A provider flagged by 2 statistical detectors + 1 scheme detector scores ≈ 90%. Three or more signals of any combination reach 100%. This prioritizes cases where multiple independent methods converge — the leads most likely to survive legal scrutiny.
 
 ---
 
@@ -129,8 +142,9 @@ Same as `scan` but executes via PySpark in `local[*]` mode. Produces identical r
 ### `profile <NPI>`
 
 Generates a comprehensive PDF dossier for a specific provider including:
-- Claims summary (totals, date range, top procedures)
-- Peer comparison (percentile rank, z-score)
+- Claims summary (totals, date range, top procedures with HCPCS descriptions)
+- Procedure breakdown by month (last 12 months, top 5 procedures per month with % of month total)
+- Peer comparison (percentile rank, z-score vs all providers)
 - Monthly billing timeline
 - All detected red flags with severity and evidence
 
@@ -148,7 +162,7 @@ python -m pytest tests/ -v
 docker run --rm --entrypoint python medicaid-fraud-hunter -m pytest tests/ -v
 ```
 
-27 tests covering all detectors, data loading, dossier generation, and PDF output.
+64 tests covering all detectors, data loading, dossier generation, PDF output, and the full Spark pipeline.
 
 ---
 
@@ -156,7 +170,8 @@ docker run --rm --entrypoint python medicaid-fraud-hunter -m pytest tests/ -v
 
 - **Pandas + PyArrow** — dataframe processing and Parquet I/O (migrated from Polars for broader CPU compatibility)
 - **PySpark** — distributed-ready anomaly detection (`spark-scan`); runs locally via `local[*]`
+- **FastAPI + uvicorn** — async API server with Server-Sent Events for streaming scan/profile progress
 - **Click** — CLI framework
 - **ReportLab** — PDF generation
 - **Pytest** — testing
-- **Docker** — containerized runtime with JDK 17 + Python 3.11 (Eclipse Temurin base image)
+- **Docker** — two images: `Dockerfile` (CLI + Spark, Eclipse Temurin JDK 17 + Python 3.11) and `Dockerfile.api` (web UI + API, Python 3.11-slim, no JDK)

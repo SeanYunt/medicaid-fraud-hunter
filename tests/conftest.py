@@ -62,11 +62,12 @@ def _generate_rows() -> list[dict]:
     # Spike month: ~20x normal; total paid = 6*5000 + 100000 = 130000 (above MIN_TOTAL_PAID)
     add(SPIKE_NPI, "99213", _month(2024, 7), 200, 500, 100000.00)
 
-    # --- Consistency provider: 42 rows all with identical paid amount ---
-    # total paid = 42 rows * 3000 = 126000 (above MIN_TOTAL_PAID)
+    # --- Consistency provider: one dominant code (99214) at ~81% of billing,
+    #     billed at an identical per-claim rate every month (CV = 0%) ---
+    # Total: 6*(15000+3500) = 111000 > MIN_TOTAL_PAID=100000; dominance=90000/111000=81%>=70%
     for m in range(1, 7):
-        for code in ["99211", "99212", "99213", "99214", "99215", "99216", "99217"]:
-            add(CONSISTENCY_NPI, code, _month(2024, m), 5, 12, 3000.00)
+        add(CONSISTENCY_NPI, "99214", _month(2024, m), 80, 150, 15000.00)  # $100/claim, CV=0%
+        add(CONSISTENCY_NPI, "99213", _month(2024, m), 20, 30, 3500.00)    # filler ~19%
 
     # --- Filler providers: 20 normal providers so z-score stats are meaningful ---
     # Each filler: 6 months * ~20000-38000 = 120000-228000 (above MIN_TOTAL_PAID)
@@ -103,10 +104,9 @@ def monthly_df(sample_csv: Path) -> pd.DataFrame:
 
 @pytest.fixture
 def procedure_df(sample_csv: Path) -> pd.DataFrame:
-    """Provider+paid_amount aggregation matching the preprocessed procedure file."""
+    """Provider+procedure+month aggregation matching the preprocessed procedure file."""
     df = load_claims(sample_csv)
     return (
-        df.groupby(["npi", "total_paid"])
-        .size()
-        .reset_index(name="row_count")
+        df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
+        .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
     )

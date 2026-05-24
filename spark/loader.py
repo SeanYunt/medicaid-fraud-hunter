@@ -86,9 +86,12 @@ def build_monthly_summary(df: DataFrame) -> DataFrame:
 
 
 def build_procedure_summary(df: DataFrame) -> DataFrame:
-    """Aggregate to (npi, total_paid, row_count) for consistency detection."""
+    """Aggregate to (npi, procedure_code, service_month, total_claims, total_paid)."""
     return (
-        df.groupBy("npi", "total_paid")
-        .agg(F.count("*").alias("row_count"))
-        .orderBy("npi", "total_paid")
+        df.groupBy("npi", "procedure_code", "service_month")
+        .agg(
+            F.sum("total_claims").alias("total_claims"),
+            F.sum("total_paid").alias("total_paid"),
+        )
+        .orderBy("npi", "procedure_code", "service_month")
     )

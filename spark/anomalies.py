@@ -18,8 +18,9 @@ from pyspark.sql.window import Window
 MAX_CLAIMS_PER_MONTH = 1500
 REVENUE_ZSCORE_THRESHOLD = 3.0
 SPIKE_MULTIPLIER = 5.0
-CONSISTENCY_RATIO_THRESHOLD = 0.9
-CONSISTENCY_MIN_ROWS = 30
+DOMINANCE_THRESHOLD = 0.70
+RATE_CV_THRESHOLD = 0.08
+CONSISTENCY_MIN_MONTHS = 3
 MIN_TOTAL_PAID = 100_000
 
 # Flag type constants (mirroring RedFlagType enum values)
@@ -195,58 +196,84 @@ def detect_billing_spikes(monthly_df: DataFrame) -> DataFrame:
     )
 
 
-def detect_suspicious_consistency(procedure_df: DataFrame) -> DataFrame:
-    """Flag providers where >90% of line items share the same paid amount."""
-    # Exclude $0 rows — uniform zeros are a data artifact
-    non_zero = procedure_df.filter(F.col("total_paid") != 0)
-
-    # Per provider: total rows and the single most common paid amount
-    window_desc = Window.partitionBy("npi").orderBy(F.col("row_count").desc())
-
-    ranked = (
-        non_zero
-        .withColumn("rank", F.row_number().over(window_desc))
-    )
-
-    top_amount = ranked.filter(F.col("rank") == 1).select(
-        "npi",
-        F.col("total_paid").alias("top_amount"),
-        F.col("row_count").alias("top_amount_count"),
-    )
-
+def detect_suspicious_consistency(code_df: DataFrame) -> DataFrame:
+    """Flag providers whose billing is dominated by one procedure billed at a
+    suspiciously uniform per-claim rate — same logic as scanner/anomalies.py.
+    """
+    # Per-provider total paid
     provider_totals = (
-        non_zero.groupBy("npi")
-        .agg(F.sum("row_count").alias("total_rows"))
+        code_df.groupBy("npi")
+        .agg(F.sum("total_paid").alias("grand_total"))
+    )
+
+    # Per (npi, procedure_code) totals — to find the dominant code
+    proc_totals = (
+        code_df.groupBy("npi", "procedure_code")
+        .agg(
+            F.sum("total_paid").alias("proc_paid"),
+            F.sum("total_claims").alias("proc_claims"),
+        )
+        .join(provider_totals, on="npi")
+        .withColumn("dominance", F.col("proc_paid") / F.col("grand_total"))
+    )
+
+    # Keep only the single highest-revenue procedure per provider
+    window_dom = Window.partitionBy("npi").orderBy(F.col("dominance").desc())
+    dominant = (
+        proc_totals
+        .withColumn("dom_rank", F.row_number().over(window_dom))
+        .filter(F.col("dom_rank") == 1)
+        .filter(F.col("dominance") >= DOMINANCE_THRESHOLD)
+        .drop("dom_rank")
+    )
+
+    # Per-claim rate per (npi, procedure_code, month) — CV across months
+    rate_stats = (
+        code_df.filter(F.col("total_claims") > 0)
+        .withColumn("rate", F.col("total_paid") / F.col("total_claims"))
+        .groupBy("npi", "procedure_code")
+        .agg(
+            F.mean("rate").alias("mean_rate"),
+            F.stddev("rate").alias("std_rate"),
+            F.count("rate").alias("month_count"),
+        )
+        .withColumn("std_rate", F.coalesce(F.col("std_rate"), F.lit(0.0)))
+        .filter(F.col("month_count") >= CONSISTENCY_MIN_MONTHS)
+        .withColumn("cv", F.col("std_rate") / F.col("mean_rate"))
+        .filter(F.col("cv") < RATE_CV_THRESHOLD)
     )
 
     return (
-        provider_totals.join(top_amount, on="npi")
-        .filter(F.col("total_rows") >= CONSISTENCY_MIN_ROWS)
-        .withColumn(
-            "consistency_ratio",
-            F.col("top_amount_count") / F.col("total_rows"),
-        )
-        .filter(F.col("consistency_ratio") > CONSISTENCY_RATIO_THRESHOLD)
+        dominant.join(rate_stats, on=["npi", "procedure_code"])
         .withColumn("flag_type", F.lit(SUSPICIOUS_CONSISTENCY))
         .withColumn(
             "description",
             F.concat_ws(
                 "",
-                F.format_number(F.col("consistency_ratio") * 100, 0),
-                F.lit("% of "),
-                F.col("total_rows").cast("string"),
-                F.lit(" line items paid identical amount $"),
-                F.format_number(F.col("top_amount"), 2),
-                F.lit(" — suggests copy-paste billing"),
+                F.format_number(F.col("dominance") * 100, 0),
+                F.lit("% of billing is procedure "),
+                F.col("procedure_code"),
+                F.lit(" at $"),
+                F.format_number(F.col("mean_rate"), 2),
+                F.lit("/claim with "),
+                F.format_number(F.col("cv") * 100, 1),
+                F.lit("% rate variation across "),
+                F.col("month_count").cast("string"),
+                F.lit(" months"),
             ),
         )
-        .withColumn("severity", F.least(F.lit(1.0), F.col("consistency_ratio")))
+        .withColumn(
+            "severity",
+            F.least(F.lit(1.0), F.col("dominance") * (F.lit(1.0) - F.col("cv"))),
+        )
         .withColumn(
             "evidence_json",
             F.to_json(F.struct(
-                F.round(F.col("consistency_ratio"), 3).alias("consistency_ratio"),
-                F.col("top_amount"),
-                F.col("total_rows"),
+                F.col("procedure_code"),
+                F.round(F.col("dominance"), 3).alias("dominance_ratio"),
+                F.round(F.col("mean_rate"), 2).alias("mean_rate_per_claim"),
+                F.round(F.col("cv"), 4).alias("rate_cv"),
+                F.col("month_count").alias("months_observed"),
             )),
         )
         .select("npi", "flag_type", "description", "severity", "evidence_json")

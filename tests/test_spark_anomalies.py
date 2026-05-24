@@ -107,7 +107,7 @@ def test_monthly_summary_one_row_per_npi_month(monthly):
 
 def test_procedure_summary_row_count_positive(procedure):
     from pyspark.sql import functions as F
-    min_count = procedure.agg(F.min("row_count")).collect()[0][0]
+    min_count = procedure.agg(F.min("total_claims")).collect()[0][0]
     assert min_count >= 1
 
 

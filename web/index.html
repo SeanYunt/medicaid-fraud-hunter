@@ -65,7 +65,7 @@
             <div class="flex gap-4 mb-6 items-end">
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">NPI</label>
-                    <input id="profile-npi" type="text" placeholder="1234567890" maxlength="10"
+                    <input id="profile-npi" type="text" placeholder="1598971855" maxlength="10"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-44 text-sm focus:outline-none focus:border-blue-500"
                            onkeydown="if(event.key==='Enter') runProfile()">
                 </div>
@@ -274,6 +274,10 @@
         // ── Profile ───────────────────────────────────────────────────────────
 
         function goProfile(npi) {
+            if (document.getElementById('profile-btn').disabled) {
+                alert('A profile is already running. Please wait for it to finish.');
+                return;
+            }
             document.getElementById('profile-npi').value = npi;
             switchTab('profile');
             runProfile();

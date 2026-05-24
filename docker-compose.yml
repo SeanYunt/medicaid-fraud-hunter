@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8000:8000"
+      - "8084:8000"
     volumes:
       - /mnt/storage/data:/app/data/raw:ro
       - /mnt/storage/data/processed:/app/data/processed:ro

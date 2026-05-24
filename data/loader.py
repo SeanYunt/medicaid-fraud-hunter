@@ -102,13 +102,12 @@ def preprocess(raw_filepath: Path) -> tuple[Path, Path]:
     monthly.to_parquet(PROVIDER_MONTHLY_FILE, engine="pyarrow", index=False)
     click.echo(f"  -> {PROVIDER_MONTHLY_FILE} ({PROVIDER_MONTHLY_FILE.stat().st_size / 1e6:.1f} MB, {len(monthly):,} rows)")
 
-    # --- Provider procedure summary (for consistency detection) ---
+    # --- Provider procedure summary (procedure-code monthly, for all code-level detectors) ---
     click.echo("Aggregating provider procedure summaries...")
     procedure = (
-        df.groupby(["npi", "total_paid"])
-        .size()
-        .reset_index(name="row_count")
-        .sort_values(["npi", "total_paid"])
+        df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
+        .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
+        .sort_values(["npi", "procedure_code", "service_month"])
         .reset_index(drop=True)
     )
     procedure.to_parquet(PROVIDER_PROCEDURE_FILE, engine="pyarrow", index=False)

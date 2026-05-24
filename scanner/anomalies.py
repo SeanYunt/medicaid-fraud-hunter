@@ -12,8 +12,9 @@ from data.models import RedFlag, RedFlagType, ScanResult
 MAX_CLAIMS_PER_MONTH = 1500
 REVENUE_ZSCORE_THRESHOLD = 3.0  # Standard deviations above mean
 SPIKE_MULTIPLIER = 5.0  # Monthly billing spike vs provider's own average
-CONSISTENCY_RATIO_THRESHOLD = 0.9  # Suspicious if >90% of rows share same paid amount
-CONSISTENCY_MIN_ROWS = 30  # Minimum rows to evaluate consistency
+DOMINANCE_THRESHOLD = 0.70   # Top procedure >= 70% of total billing
+RATE_CV_THRESHOLD = 0.08     # Per-claim rate coefficient of variation < 8%
+CONSISTENCY_MIN_MONTHS = 3   # Minimum months of data to evaluate consistency
 MIN_TOTAL_PAID = 100_000  # Ignore providers below this total — too small for viable qui tam case
 
 # NOS/miscellaneous HCPCS codes — vague codes that obscure what was actually billed
@@ -60,7 +61,7 @@ def scan_all(
         t0 = time.time()
         click.echo("Loading preprocessed summaries...")
         monthly_df = pd.read_parquet(monthly_path, engine="pyarrow")
-        procedure_df = pd.read_parquet(procedure_path, engine="pyarrow")
+        code_df = pd.read_parquet(procedure_path, engine="pyarrow")
         click.echo(f"done ({time.time() - t0:.1f}s)")
     else:
         t0 = time.time()
@@ -75,20 +76,12 @@ def scan_all(
         )
         click.echo(f"done ({time.time() - t0:.1f}s)")
         t0 = time.time()
-        click.echo("Aggregating procedure data...")
-        procedure_df = (
-            df.groupby(["npi", "total_paid"])
-            .size()
-            .reset_index(name="row_count")
-        )
-        click.echo(f"done ({time.time() - t0:.1f}s)")
-        t0 = time.time()
         click.echo("Aggregating procedure code data...")
         code_df = (
             df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
             .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
-        click.echo(f" done ({time.time() - t0:.1f}s)")
+        click.echo(f"done ({time.time() - t0:.1f}s)")
 
     # Filter out providers with total paid below minimum threshold
     provider_totals = (
@@ -101,7 +94,8 @@ def scan_all(
     )
     excluded = len(provider_totals) - len(qualifying_npis)
     monthly_df = monthly_df[monthly_df["npi"].isin(qualifying_npis)].copy()
-    procedure_df = procedure_df[procedure_df["npi"].isin(qualifying_npis)].copy()
+    if code_df is not None:
+        code_df = code_df[code_df["npi"].isin(qualifying_npis)].copy()
     click.echo(f"Filtered to {len(qualifying_npis):,} providers with >=${MIN_TOTAL_PAID:,} total paid "
                f"({excluded:,} excluded)")
 
@@ -112,13 +106,11 @@ def scan_all(
 
     if state_npis is not None:
         act_monthly = monthly_df[monthly_df["npi"].isin(state_npis)].copy()
-        act_procedure = procedure_df[procedure_df["npi"].isin(state_npis)].copy()
         if code_df is not None:
             code_df = code_df[code_df["npi"].isin(state_npis)].copy()
         click.echo(f"Filtered to {act_monthly['npi'].nunique():,} providers in state scope")
     else:
         act_monthly = monthly_df
-        act_procedure = procedure_df
 
     num_detectors = 4 if code_df is None else 6
     click.echo("Running anomaly detection...")
@@ -141,10 +133,10 @@ def scan_all(
     spike_flags = _detect_billing_spikes(act_monthly)
     click.echo(f"  done ({time.time() - t0:.1f}s, {len(spike_flags):,} flagged)")
 
-    # --- Suspicious consistency (provider-specific — safe on filtered data) ---
+    # --- Suspicious consistency (procedure dominance + rate uniformity) ---
     t0 = time.time()
     click.echo(f"  [4/{num_detectors}] Suspicious consistency detector...")
-    consistency_flags = _detect_suspicious_consistency(act_procedure)
+    consistency_flags = _detect_suspicious_consistency(code_df) if code_df is not None else {}
     click.echo(f"  done ({time.time() - t0:.1f}s, {len(consistency_flags):,} flagged)")
 
     # --- Scheme-specific detectors (require raw code-level data) ---
@@ -430,60 +422,84 @@ def _detect_upcoding_trajectory(code_df: pd.DataFrame) -> dict[str, list[RedFlag
     return flags
 
 
-def _detect_suspicious_consistency(procedure_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers where an unusually high fraction of rows share the same paid amount.
+def _detect_suspicious_consistency(code_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
+    """Flag providers whose billing is dominated by one procedure billed at a
+    suspiciously uniform per-claim rate — the signature of copy-paste or phantom billing.
 
-    Scale fix: removed unnecessary .copy() of potentially 50M+ row DataFrame (caused
-    severe memory pressure at national scale), and replaced groupby().idxmax()+loc with
-    sort+drop_duplicates — avoids Python-level group iteration on object-dtype NPI keys.
+    Two conditions must both hold:
+      1. A single procedure code accounts for >= DOMINANCE_THRESHOLD of total paid.
+      2. The per-claim rate for that code has a coefficient of variation (std/mean)
+         below RATE_CV_THRESHOLD across months — almost the same amount every month.
     """
-    # Exclude $0 rows — uniform zeros are a data artifact, not copy-paste fraud
-    df = procedure_df[procedure_df["total_paid"] != 0]
-
-    if df.empty:
+    if code_df is None or code_df.empty:
         return {}
 
-    # For each NPI: total row count across all paid amounts
-    totals = (
-        df.groupby("npi", as_index=False)["row_count"]
+    # Per-provider total paid
+    provider_totals = (
+        code_df.groupby("npi", as_index=False)["total_paid"]
         .sum()
-        .rename(columns={"row_count": "total_rows"})
+        .rename(columns={"total_paid": "grand_total"})
     )
 
-    # Most-frequent paid amount per provider: sort descending so drop_duplicates
-    # keeps the highest-count row (first occurrence) for each NPI.
-    top_rows = (
-        df.sort_values("row_count", ascending=False)
+    # Per (npi, procedure_code) totals — to find the dominant code
+    proc_totals = (
+        code_df.groupby(["npi", "procedure_code"], as_index=False)
+        .agg(proc_paid=("total_paid", "sum"), proc_claims=("total_claims", "sum"))
+    )
+    proc_totals = proc_totals.merge(provider_totals, on="npi")
+    proc_totals["dominance"] = proc_totals["proc_paid"] / proc_totals["grand_total"]
+
+    # Keep only the single highest-revenue procedure per provider
+    dominant = (
+        proc_totals.sort_values("dominance", ascending=False)
         .drop_duplicates(subset="npi", keep="first")
-        [["npi", "total_paid", "row_count"]]
-        .rename(columns={"row_count": "top_amount_count", "total_paid": "top_amount"})
     )
+    dominant = dominant[dominant["dominance"] >= DOMINANCE_THRESHOLD].copy()
 
-    provider_stats = totals.merge(top_rows, on="npi")
-    provider_stats = provider_stats[provider_stats["total_rows"] >= CONSISTENCY_MIN_ROWS].copy()
-    provider_stats["consistency_ratio"] = (
-        provider_stats["top_amount_count"] / provider_stats["total_rows"]
+    if dominant.empty:
+        return {}
+
+    # Per-claim rate per (npi, procedure_code, month) — skip zero-claim rows
+    monthly_rates = code_df[code_df["total_claims"] > 0].copy()
+    monthly_rates["rate"] = monthly_rates["total_paid"] / monthly_rates["total_claims"]
+
+    rate_stats = (
+        monthly_rates.groupby(["npi", "procedure_code"], as_index=False)
+        .agg(
+            mean_rate=("rate", "mean"),
+            std_rate=("rate", "std"),
+            month_count=("rate", "count"),
+        )
     )
-    provider_stats = provider_stats[provider_stats["consistency_ratio"] > CONSISTENCY_RATIO_THRESHOLD]
+    rate_stats["std_rate"] = rate_stats["std_rate"].fillna(0.0)
+    rate_stats = rate_stats[rate_stats["month_count"] >= CONSISTENCY_MIN_MONTHS]
+    rate_stats["cv"] = rate_stats["std_rate"] / rate_stats["mean_rate"].replace(0.0, float("nan"))
+    rate_stats = rate_stats.dropna(subset=["cv"])
+    rate_stats = rate_stats[rate_stats["cv"] < RATE_CV_THRESHOLD]
+
+    if rate_stats.empty:
+        return {}
+
+    flagged = dominant.merge(rate_stats, on=["npi", "procedure_code"])
 
     flags: dict[str, list[RedFlag]] = {}
-    for _, row in provider_stats.iterrows():
+    for _, row in flagged.iterrows():
         npi = str(row["npi"])
-        ratio = row["consistency_ratio"]
-        top_amount = row["top_amount"]
-        total = row["total_rows"]
-        severity = min(1.0, ratio)
+        severity = min(1.0, row["dominance"] * (1.0 - row["cv"]))
         flag = RedFlag(
             flag_type=RedFlagType.SUSPICIOUS_CONSISTENCY,
             description=(
-                f"{ratio:.0%} of {total} line items paid identical amount "
-                f"${top_amount:,.2f} — suggests copy-paste billing"
+                f"{row['dominance']:.0%} of billing is procedure {row['procedure_code']} "
+                f"at ${row['mean_rate']:,.2f}/claim with only {row['cv']:.1%} rate variation "
+                f"across {int(row['month_count'])} months — consistent with copy-paste billing"
             ),
             severity=severity,
             evidence={
-                "consistency_ratio": round(ratio, 3),
-                "top_amount": top_amount,
-                "total_rows": total,
+                "procedure_code": row["procedure_code"],
+                "dominance_ratio": round(row["dominance"], 3),
+                "mean_rate_per_claim": round(row["mean_rate"], 2),
+                "rate_cv": round(row["cv"], 4),
+                "months_observed": int(row["month_count"]),
             },
         )
         flags.setdefault(npi, []).append(flag)

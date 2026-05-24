@@ -283,10 +283,14 @@
         }
 
         function goProfile(npi, force = false) {
-            if (document.getElementById('profile-btn').disabled) {
+            const btn = document.getElementById('profile-btn');
+            if (btn.disabled && btn.textContent === 'Building…') {
                 alert('A profile is already running. Please wait for it to finish.');
                 return;
             }
+            // Reset completed state so the new profile can run
+            btn.disabled = false;
+            btn.textContent = 'Generate Dossier';
             document.getElementById('profile-npi').value = npi;
             switchTab('profile');
             runProfile(force);

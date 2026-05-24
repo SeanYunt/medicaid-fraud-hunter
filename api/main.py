@@ -4,6 +4,7 @@ Wraps scan, profile, and lookup as HTTP endpoints.
 Scan and profile stream progress via Server-Sent Events (SSE).
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Generator
@@ -121,15 +122,31 @@ def scan(req: ScanRequest):
             state_npis=state_npis,
         )
 
-        return {
+        payload = {
             "total": len(results),
             "providers": [_serialize_scan_result(r) for r in results[: req.top]],
+            "params": {"threshold": req.threshold, "top": req.top, "state": req.state},
         }
+
+        DOSSIERS_DIR.mkdir(parents=True, exist_ok=True)
+        last_scan_path = DOSSIERS_DIR / "last_scan_result.json"
+        last_scan_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        return payload
 
     def event_stream() -> Generator[str, None, None]:
         yield from stream_operation(run)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/last-scan")
+def last_scan():
+    """Return the most recent scan results, persisted across connections."""
+    path = DOSSIERS_DIR / "last_scan_result.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No scan results available yet.")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @app.post("/api/profile")

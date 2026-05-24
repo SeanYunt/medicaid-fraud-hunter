@@ -206,7 +206,7 @@
             const resultsEl = document.getElementById('scan-results');
             btn.disabled = true;
             btn.textContent = 'Scanning…';
-            logEl.innerHTML = '';
+            logEl.innerHTML = '<div class="text-gray-600">Starting scan…</div>';
             logEl.classList.remove('hidden');
             resultsEl.innerHTML = '';
 
@@ -476,8 +476,25 @@
 
         // ── Init ──────────────────────────────────────────────────────────────
 
+        async function loadLastScan() {
+            try {
+                const r = await fetch(`${API_BASE}/api/last-scan`);
+                if (!r.ok) return;
+                const data = await r.json();
+                renderScanResults(data);
+                const p = data.params || {};
+                if (p.threshold != null) document.getElementById('scan-threshold').value = p.threshold;
+                if (p.top != null) document.getElementById('scan-top').value = p.top;
+                if (p.state) document.getElementById('scan-state').value = p.state;
+                const logEl = document.getElementById('scan-log');
+                logEl.innerHTML = '<div class="text-gray-600 italic">Restored from last scan</div>';
+                logEl.classList.remove('hidden');
+            } catch (_) {}
+        }
+
         switchTab('scan');
         checkStatus();
+        loadLastScan();
         setInterval(checkStatus, 30_000);
     </script>
 </body>

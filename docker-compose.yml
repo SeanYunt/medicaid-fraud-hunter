@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - /mnt/storage/data:/app/data/raw:ro
+      - /mnt/storage/data/processed:/app/data/processed:ro
+      - /mnt/storage/dossiers:/app/output/dossiers
+    environment:
+      - DOSSIERS_DIR=/app/output/dossiers
+    restart: unless-stopped

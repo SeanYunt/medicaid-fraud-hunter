@@ -58,32 +58,32 @@ def scan_all(
 
     if monthly_path and procedure_path:
         t0 = time.time()
-        click.echo("Loading preprocessed summaries...", nl=False)
+        click.echo("Loading preprocessed summaries...")
         monthly_df = pd.read_parquet(monthly_path, engine="pyarrow")
         procedure_df = pd.read_parquet(procedure_path, engine="pyarrow")
-        click.echo(f" done ({time.time() - t0:.1f}s)")
+        click.echo(f"done ({time.time() - t0:.1f}s)")
     else:
         t0 = time.time()
-        click.echo("Loading raw dataset (consider running 'preprocess' first)...", nl=False)
+        click.echo("Loading raw dataset (consider running 'preprocess' first)...")
         df = load_claims(filepath)
-        click.echo(f" done ({time.time() - t0:.1f}s)")
+        click.echo(f"done ({time.time() - t0:.1f}s)")
         t0 = time.time()
-        click.echo("Aggregating monthly data...", nl=False)
+        click.echo("Aggregating monthly data...")
         monthly_df = (
             df.groupby(["npi", "service_month"], as_index=False)
             .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
         )
-        click.echo(f" done ({time.time() - t0:.1f}s)")
+        click.echo(f"done ({time.time() - t0:.1f}s)")
         t0 = time.time()
-        click.echo("Aggregating procedure data...", nl=False)
+        click.echo("Aggregating procedure data...")
         procedure_df = (
             df.groupby(["npi", "total_paid"])
             .size()
             .reset_index(name="row_count")
         )
-        click.echo(f" done ({time.time() - t0:.1f}s)")
+        click.echo(f"done ({time.time() - t0:.1f}s)")
         t0 = time.time()
-        click.echo("Aggregating procedure code data...", nl=False)
+        click.echo("Aggregating procedure code data...")
         code_df = (
             df.groupby(["npi", "procedure_code", "service_month"], as_index=False)
             .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
@@ -125,39 +125,39 @@ def scan_all(
 
     # --- Volume impossibility (fixed threshold — safe on filtered data) ---
     t0 = time.time()
-    click.echo(f"  [1/{num_detectors}] Volume impossibility detector...", nl=False)
+    click.echo(f"  [1/{num_detectors}] Volume impossibility detector...")
     volume_flags = _detect_volume_impossibility(act_monthly)
-    click.echo(f" done ({time.time() - t0:.1f}s, {len(volume_flags):,} flagged)")
+    click.echo(f"  done ({time.time() - t0:.1f}s, {len(volume_flags):,} flagged)")
 
     # --- Revenue outliers (national baseline, state-filtered output) ---
     t0 = time.time()
-    click.echo(f"  [2/{num_detectors}] Revenue outlier detector...", nl=False)
+    click.echo(f"  [2/{num_detectors}] Revenue outlier detector...")
     revenue_flags = _detect_revenue_outliers(national_monthly_df, state_npis=state_npis)
-    click.echo(f" done ({time.time() - t0:.1f}s, {len(revenue_flags):,} flagged)")
+    click.echo(f"  done ({time.time() - t0:.1f}s, {len(revenue_flags):,} flagged)")
 
     # --- Billing spikes (provider-relative — safe on filtered data) ---
     t0 = time.time()
-    click.echo(f"  [3/{num_detectors}] Billing spike detector...", nl=False)
+    click.echo(f"  [3/{num_detectors}] Billing spike detector...")
     spike_flags = _detect_billing_spikes(act_monthly)
-    click.echo(f" done ({time.time() - t0:.1f}s, {len(spike_flags):,} flagged)")
+    click.echo(f"  done ({time.time() - t0:.1f}s, {len(spike_flags):,} flagged)")
 
     # --- Suspicious consistency (provider-specific — safe on filtered data) ---
     t0 = time.time()
-    click.echo(f"  [4/{num_detectors}] Suspicious consistency detector...", nl=False)
+    click.echo(f"  [4/{num_detectors}] Suspicious consistency detector...")
     consistency_flags = _detect_suspicious_consistency(act_procedure)
-    click.echo(f" done ({time.time() - t0:.1f}s, {len(consistency_flags):,} flagged)")
+    click.echo(f"  done ({time.time() - t0:.1f}s, {len(consistency_flags):,} flagged)")
 
     # --- Scheme-specific detectors (require raw code-level data) ---
     if code_df is not None:
         t0 = time.time()
-        click.echo(f"  [5/{num_detectors}] NOS concentration detector...", nl=False)
+        click.echo(f"  [5/{num_detectors}] NOS concentration detector...")
         nos_flags = _detect_nos_concentration(code_df)
-        click.echo(f" done ({time.time() - t0:.1f}s, {len(nos_flags):,} flagged)")
+        click.echo(f"  done ({time.time() - t0:.1f}s, {len(nos_flags):,} flagged)")
 
         t0 = time.time()
-        click.echo(f"  [6/{num_detectors}] Upcoding trajectory detector...", nl=False)
+        click.echo(f"  [6/{num_detectors}] Upcoding trajectory detector...")
         upcoding_flags = _detect_upcoding_trajectory(code_df)
-        click.echo(f" done ({time.time() - t0:.1f}s, {len(upcoding_flags):,} flagged)")
+        click.echo(f"  done ({time.time() - t0:.1f}s, {len(upcoding_flags):,} flagged)")
     else:
         nos_flags = {}
         upcoding_flags = {}

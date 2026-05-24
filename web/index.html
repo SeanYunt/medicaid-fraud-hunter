@@ -67,7 +67,8 @@
                     <label class="block text-xs text-gray-500 mb-1">NPI</label>
                     <input id="profile-npi" type="text" placeholder="1598971855" maxlength="10"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-44 text-sm focus:outline-none focus:border-blue-500"
-                           onkeydown="if(event.key==='Enter') runProfile()">
+                           onkeydown="if(event.key==='Enter') runProfile()"
+                           oninput="resetProfileBtn()">
                 </div>
                 <button onclick="runProfile()" id="profile-btn"
                         class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 px-5 py-2 rounded text-sm font-medium transition-colors">
@@ -273,17 +274,25 @@
 
         // ── Profile ───────────────────────────────────────────────────────────
 
-        function goProfile(npi) {
+        function resetProfileBtn() {
+            const btn = document.getElementById('profile-btn');
+            if (btn.textContent === 'Profile Completed') {
+                btn.disabled = false;
+                btn.textContent = 'Generate Dossier';
+            }
+        }
+
+        function goProfile(npi, force = false) {
             if (document.getElementById('profile-btn').disabled) {
                 alert('A profile is already running. Please wait for it to finish.');
                 return;
             }
             document.getElementById('profile-npi').value = npi;
             switchTab('profile');
-            runProfile();
+            runProfile(force);
         }
 
-        async function runProfile() {
+        async function runProfile(force = false) {
             const npi = document.getElementById('profile-npi').value.trim();
             if (!/^\d{10}$/.test(npi)) {
                 alert('NPI must be exactly 10 digits.');
@@ -299,17 +308,40 @@
             resultEl.innerHTML = '';
 
             try {
-                await streamPost(`${API_BASE}/api/profile`, {npi}, logEl, renderProfileResult);
+                await streamPost(`${API_BASE}/api/profile`, {npi, force}, logEl, renderProfileResult);
             } catch (e) {
                 appendLog(logEl, '✗ ' + e.message, true);
             } finally {
-                btn.disabled = false;
-                btn.textContent = 'Generate Dossier';
+                if (btn.textContent === 'Building…') {
+                    btn.disabled = false;
+                    btn.textContent = 'Generate Dossier';
+                }
             }
         }
 
         function renderProfileResult(data) {
             const el = document.getElementById('profile-result');
+
+            if (data.cached) {
+                el.innerHTML = `
+                    <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-4 flex justify-between items-start gap-4">
+                        <div>
+                            <div class="text-xs text-gray-500 font-mono">NPI ${data.npi}</div>
+                            <a href="${DOSSIERS_BASE}/${data.pdf_filename}" target="_blank"
+                               class="inline-flex items-center gap-1 mt-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-3 py-1.5 rounded transition-colors">
+                                ↓ Download PDF Dossier
+                            </a>
+                        </div>
+                        <div class="text-right shrink-0 text-xs text-gray-500">
+                            Cached · <button onclick="runProfile(true)" class="text-blue-400 hover:text-blue-300 underline">force re-run</button>
+                        </div>
+                    </div>`;
+                const btn = document.getElementById('profile-btn');
+                btn.disabled = true;
+                btn.textContent = 'Profile Completed';
+                return;
+            }
+
             const flags = data.scan_result?.red_flags || [];
             const flagRows = flags.map(f => `
                 <tr class="border-t border-gray-800">
@@ -346,6 +378,9 @@
                     <tbody>${flagRows}</tbody>
                 </table>
                 </div>` : '<p class="text-gray-500 text-sm">No flags detected.</p>'}`;
+            const btn = document.getElementById('profile-btn');
+            btn.disabled = true;
+            btn.textContent = 'Profile Completed';
         }
 
         // ── Lookup ────────────────────────────────────────────────────────────
@@ -416,7 +451,7 @@
                         <td class="px-3 py-2 flex gap-4">
                             <a href="${DOSSIERS_BASE}/${d.filename}" target="_blank"
                                class="text-xs text-blue-400 hover:text-blue-300">↓ PDF</a>
-                            <button onclick="goProfile('${d.npi}')"
+                            <button onclick="goProfile('${d.npi}', true)"
                                     class="text-xs text-gray-400 hover:text-gray-200">Re-run →</button>
                         </td>
                     </tr>`).join('');

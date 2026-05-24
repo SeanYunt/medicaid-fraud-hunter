@@ -46,6 +46,7 @@ class ScanRequest(BaseModel):
 
 class ProfileRequest(BaseModel):
     npi: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{10}$")
+    force: bool = Field(False)
 
 
 class LookupRequest(BaseModel):
@@ -136,6 +137,21 @@ def profile(req: ProfileRequest):
     """Build a dossier for a specific NPI. Streams SSE progress, then PDF info."""
 
     def run() -> dict:
+        if not req.force:
+            existing = sorted(DOSSIERS_DIR.glob(f"dossier_{req.npi}_*.pdf"), reverse=True)
+            if existing:
+                pdf_path = existing[0]
+                print(f"Cached dossier found: {pdf_path.name} (use force=true to regenerate)")
+                return {
+                    "npi": req.npi,
+                    "provider_name": None,
+                    "overall_score": None,
+                    "num_flags": None,
+                    "pdf_filename": pdf_path.name,
+                    "scan_result": None,
+                    "cached": True,
+                }
+
         filepath = find_dataset()
         preprocessed = find_preprocessed()
         monthly_path = preprocessed[0] if preprocessed else None
@@ -160,6 +176,7 @@ def profile(req: ProfileRequest):
             "num_flags": len(dossier.scan_result.red_flags),
             "pdf_filename": pdf_path.name,
             "scan_result": _serialize_scan_result(dossier.scan_result),
+            "cached": False,
         }
 
     def event_stream() -> Generator[str, None, None]:

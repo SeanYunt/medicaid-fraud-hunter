@@ -145,16 +145,16 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
         # Top procedures
         if "top_procedures" in summary and summary["top_procedures"]:
             elements.append(Paragraph("Top Procedures by Volume", heading_style))
-            proc_header = [["HCPCS Code", "Rows", "Claims", "Total Paid"]]
+            proc_header = [["HCPCS Code", "Description", "Claims", "Total Paid"]]
             proc_rows = [
                 [p.get("procedure_code", ""),
-                 str(p.get("row_count", "")),
-                 str(p.get("claims", "")),
+                 p.get("description", "") or "",
+                 f"{p.get('claims', p.get('row_count', '')):,}" if isinstance(p.get("claims", p.get("row_count")), (int, float)) else str(p.get("claims", p.get("row_count", ""))),
                  f"${p.get('paid', 0):,.2f}"]
                 for p in summary["top_procedures"]
             ]
             proc_table = Table(proc_header + proc_rows,
-                               colWidths=[1.5 * inch, 1.5 * inch, 1.5 * inch, 2 * inch])
+                               colWidths=[0.9 * inch, 3.0 * inch, 0.9 * inch, 1.2 * inch])
             proc_table.setStyle(TableStyle([
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.95)),
@@ -162,8 +162,41 @@ def generate_dossier_pdf(dossier: Dossier, output_dir: Path | None = None) -> Pa
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
             ]))
             elements.append(proc_table)
+            elements.append(Spacer(1, 8))
+
+        # Procedure breakdown by month
+        if "procedure_monthly" in summary and summary["procedure_monthly"]:
+            elements.append(Paragraph("Procedure Breakdown by Month (Last 12 Months, Top 5 per Month)", heading_style))
+            pm_header = [["Month", "Code", "Description", "Claims", "Total Paid", "% of Month"]]
+            pm_rows = []
+            current_month = None
+            for r in summary["procedure_monthly"]:
+                month_label = r["month"] if r["month"] != current_month else ""
+                current_month = r["month"]
+                pm_rows.append([
+                    month_label,
+                    r["procedure_code"],
+                    r["description"] or "",
+                    f"{r['claims']:,}",
+                    f"${r['total_paid']:,.2f}",
+                    f"{r['pct_of_month']:.1f}%",
+                ])
+            pm_table = Table(pm_header + pm_rows,
+                             colWidths=[0.85 * inch, 0.65 * inch, 2.4 * inch, 0.65 * inch, 1.1 * inch, 0.85 * inch])
+            pm_table.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.Color(0.9, 0.9, 0.95)),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (3, 0), (-1, -1), "RIGHT"),
+            ]))
+            elements.append(pm_table)
             elements.append(Spacer(1, 8))
 
     # --- Peer Comparison ---

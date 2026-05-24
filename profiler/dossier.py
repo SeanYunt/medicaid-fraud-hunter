@@ -6,6 +6,7 @@ import pandas as pd
 from data.fetch import lookup_npi
 from data.loader import load_claims, load_claims_for_provider
 from data.models import Dossier, Provider, ScanResult
+from scanner.hcpcs import get_description
 
 
 def build_dossier(
@@ -42,6 +43,8 @@ def build_dossier(
 
     click.echo("  Summarizing claims...")
     claims_summary = _summarize_claims(claims)
+    click.echo("  Building procedure monthly breakdown...")
+    claims_summary["procedure_monthly"] = _build_procedure_monthly(claims)
     click.echo("  Computing peer comparison...")
     peer_comparison = _compare_to_peers(filepath, npi, claims, monthly_path=monthly_path)
     click.echo("  Building billing timeline...")
@@ -97,9 +100,45 @@ def _summarize_claims(claims: pd.DataFrame) -> dict:
             .sort_values("row_count", ascending=False)
             .head(10)
         )
-        summary["top_procedures"] = top_procedures.to_dict("records")
+        records = top_procedures.to_dict("records")
+        for rec in records:
+            rec["description"] = get_description(str(rec.get("procedure_code", "")))
+        summary["top_procedures"] = records
 
     return summary
+
+
+def _build_procedure_monthly(claims: pd.DataFrame) -> list[dict]:
+    """Last 12 months of billing, top 5 procedures per month with % of month total."""
+    needed = {"service_month", "procedure_code", "total_paid", "total_claims"}
+    if not needed.issubset(claims.columns):
+        return []
+
+    grp = (
+        claims.groupby(["service_month", "procedure_code"], as_index=False)
+        .agg(total_claims=("total_claims", "sum"), total_paid=("total_paid", "sum"))
+    )
+
+    months = sorted(grp["service_month"].unique())[-12:]
+    grp = grp[grp["service_month"].isin(months)]
+
+    rows: list[dict] = []
+    for month in sorted(months):
+        month_df = grp[grp["service_month"] == month]
+        month_total = float(month_df["total_paid"].sum())
+        if month_total <= 0:
+            continue
+        for _, r in month_df.nlargest(5, "total_paid").iterrows():
+            code = str(r["procedure_code"])
+            rows.append({
+                "month": str(month),
+                "procedure_code": code,
+                "description": get_description(code),
+                "claims": int(r["total_claims"]),
+                "total_paid": float(r["total_paid"]),
+                "pct_of_month": round(float(r["total_paid"]) / month_total * 100, 1),
+            })
+    return rows
 
 
 def _compare_to_peers(

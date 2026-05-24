@@ -52,7 +52,8 @@ Under the False Claims Act, qui tam relators who bring fraud to light can recove
 docker compose up -d
 ```
 
-Then open `http://<server>:8084` — the UI provides Scan, Profile, Lookup, and Dossiers tabs.
+Then open `http://<server>:8083` — the UI provides Scan, Profile, Lookup, and Dossiers tabs.
+The API runs on port 8084; the UI and dossier PDFs are served from port 8083.
 
 **CLI with Docker:**
 

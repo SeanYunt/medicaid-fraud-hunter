@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medicaid Fraud Hunter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-mono">
+
+    <!-- Header -->
+    <header class="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold text-white tracking-tight">Medicaid Fraud Hunter</h1>
+            <p class="text-xs text-gray-500 mt-0.5">CMS claims anomaly detection</p>
+        </div>
+        <div class="flex items-center gap-2 text-sm">
+            <span id="status-dot" class="w-2 h-2 rounded-full bg-gray-600"></span>
+            <span id="status-text" class="text-gray-500 text-xs">checking...</span>
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="border-b border-gray-800 px-6">
+        <nav class="flex gap-1">
+            <button onclick="switchTab('scan')"     id="tab-scan"     class="tab-btn px-4 py-3 text-sm border-b-2">Scan</button>
+            <button onclick="switchTab('profile')"  id="tab-profile"  class="tab-btn px-4 py-3 text-sm border-b-2">Profile</button>
+            <button onclick="switchTab('lookup')"   id="tab-lookup"   class="tab-btn px-4 py-3 text-sm border-b-2">Lookup</button>
+            <button onclick="switchTab('dossiers')" id="tab-dossiers" class="tab-btn px-4 py-3 text-sm border-b-2">Dossiers</button>
+        </nav>
+    </div>
+
+    <!-- Content -->
+    <main class="p-6 max-w-6xl mx-auto">
+
+        <!-- ── Scan ── -->
+        <div id="panel-scan" class="panel">
+            <div class="flex gap-4 mb-6 items-end flex-wrap">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Threshold</label>
+                    <input id="scan-threshold" type="number" value="0.3" min="0" max="1" step="0.05"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Top N</label>
+                    <input id="scan-top" type="number" value="50" min="1" max="500"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">State</label>
+                    <input id="scan-state" type="text" placeholder="WA" maxlength="2"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-20 text-sm uppercase focus:outline-none focus:border-blue-500">
+                </div>
+                <button onclick="runScan()" id="scan-btn"
+                        class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 px-5 py-2 rounded text-sm font-medium transition-colors">
+                    Run Scan
+                </button>
+            </div>
+            <div id="scan-log" class="hidden mb-4 bg-gray-900 border border-gray-800 rounded p-3 h-44 overflow-y-auto text-xs text-gray-400"></div>
+            <div id="scan-results"></div>
+        </div>
+
+        <!-- ── Profile ── -->
+        <div id="panel-profile" class="panel hidden">
+            <div class="flex gap-4 mb-6 items-end">
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">NPI</label>
+                    <input id="profile-npi" type="text" placeholder="1234567890" maxlength="10"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-44 text-sm focus:outline-none focus:border-blue-500"
+                           onkeydown="if(event.key==='Enter') runProfile()">
+                </div>
+                <button onclick="runProfile()" id="profile-btn"
+                        class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 px-5 py-2 rounded text-sm font-medium transition-colors">
+                    Generate Dossier
+                </button>
+            </div>
+            <div id="profile-log" class="hidden mb-4 bg-gray-900 border border-gray-800 rounded p-3 h-44 overflow-y-auto text-xs text-gray-400"></div>
+            <div id="profile-result"></div>
+        </div>
+
+        <!-- ── Lookup ── -->
+        <div id="panel-lookup" class="panel hidden">
+            <div class="flex gap-4 mb-6 items-end flex-wrap">
+                <div class="flex-1 min-w-64">
+                    <label class="block text-xs text-gray-500 mb-1">Name or NPI</label>
+                    <input id="lookup-query" type="text" placeholder="Provider name or 10-digit NPI"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500"
+                           onkeydown="if(event.key==='Enter') runLookup()">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">State</label>
+                    <input id="lookup-state" type="text" placeholder="WA" maxlength="2"
+                           class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-20 text-sm uppercase focus:outline-none focus:border-blue-500"
+                           onkeydown="if(event.key==='Enter') runLookup()">
+                </div>
+                <button onclick="runLookup()" id="lookup-btn"
+                        class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 px-5 py-2 rounded text-sm font-medium transition-colors">
+                    Search
+                </button>
+            </div>
+            <div id="lookup-results"></div>
+        </div>
+
+        <!-- ── Dossiers ── -->
+        <div id="panel-dossiers" class="panel hidden">
+            <div class="flex justify-between items-center mb-4">
+                <span class="text-sm text-gray-400">Generated PDF dossiers</span>
+                <button onclick="loadDossiers()" class="text-xs text-blue-400 hover:text-blue-300">↺ Refresh</button>
+            </div>
+            <div id="dossiers-list"></div>
+        </div>
+
+    </main>
+
+    <script>
+        // API on port 8084, file server (dossiers) on 8083 — same hostname as this page
+        const API_BASE      = `http://${window.location.hostname}:8084`;
+        const DOSSIERS_BASE = `http://${window.location.hostname}:8083/dossiers`;
+
+        // ── Tab switching ──────────────────────────────────────────────────────
+
+        function switchTab(name) {
+            document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.remove('border-blue-500', 'text-blue-400');
+                b.classList.add('border-transparent', 'text-gray-400');
+            });
+            document.getElementById(`panel-${name}`).classList.remove('hidden');
+            const btn = document.getElementById(`tab-${name}`);
+            btn.classList.add('border-blue-500', 'text-blue-400');
+            btn.classList.remove('border-transparent', 'text-gray-400');
+            if (name === 'dossiers') loadDossiers();
+        }
+
+        // ── API status ─────────────────────────────────────────────────────────
+
+        async function checkStatus() {
+            const dot = document.getElementById('status-dot');
+            const txt = document.getElementById('status-text');
+            try {
+                const r = await fetch(`${API_BASE}/api/status`);
+                const d = await r.json();
+                dot.className = 'w-2 h-2 rounded-full bg-green-500';
+                txt.textContent = `API online · ${d.preprocessed ? 'preprocessed ✓' : 'no preprocessed data'}`;
+            } catch {
+                dot.className = 'w-2 h-2 rounded-full bg-red-500';
+                txt.textContent = 'API unreachable';
+            }
+        }
+
+        // ── SSE streaming helper ───────────────────────────────────────────────
+
+        async function streamPost(url, body, logEl, onDone) {
+            const r = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            });
+            const reader = r.body.getReader();
+            const dec = new TextDecoder();
+            let buf = '';
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                buf += dec.decode(value, {stream: true});
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const ev = JSON.parse(line.slice(6));
+                    if (ev.type === 'progress') {
+                        appendLog(logEl, ev.msg, false);
+                    } else if (ev.type === 'done') {
+                        onDone(ev.result);
+                    } else if (ev.type === 'error') {
+                        appendLog(logEl, '✗ ' + ev.msg, true);
+                    }
+                }
+            }
+        }
+
+        function appendLog(el, msg, isError) {
+            const div = document.createElement('div');
+            div.className = isError ? 'text-red-400' : '';
+            div.textContent = msg;
+            el.appendChild(div);
+            el.scrollTop = el.scrollHeight;
+        }
+
+        // ── Score display helpers ──────────────────────────────────────────────
+
+        function scoreColor(s) {
+            return s >= 0.7 ? 'text-red-400' : s >= 0.4 ? 'text-orange-400' : 'text-yellow-400';
+        }
+        function scoreLabel(s) {
+            return s >= 0.7 ? 'HIGH' : s >= 0.4 ? 'MED' : 'LOW';
+        }
+        function scorePct(s) { return (s * 100).toFixed(0) + '%'; }
+
+        // ── Scan ──────────────────────────────────────────────────────────────
+
+        async function runScan() {
+            const btn = document.getElementById('scan-btn');
+            const logEl = document.getElementById('scan-log');
+            const resultsEl = document.getElementById('scan-results');
+            btn.disabled = true;
+            btn.textContent = 'Scanning…';
+            logEl.innerHTML = '';
+            logEl.classList.remove('hidden');
+            resultsEl.innerHTML = '';
+
+            const body = {
+                threshold: parseFloat(document.getElementById('scan-threshold').value),
+                top:       parseInt(document.getElementById('scan-top').value),
+                state:     document.getElementById('scan-state').value.trim().toUpperCase() || null,
+            };
+
+            try {
+                await streamPost(`${API_BASE}/api/scan`, body, logEl, renderScanResults);
+            } catch (e) {
+                appendLog(logEl, '✗ ' + e.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Run Scan';
+            }
+        }
+
+        function renderScanResults(data) {
+            const el = document.getElementById('scan-results');
+            if (!data.providers.length) {
+                el.innerHTML = '<p class="text-gray-500 text-sm mt-2">No providers found above threshold.</p>';
+                return;
+            }
+            const rows = data.providers.map((p, i) => `
+                <tr class="border-t border-gray-800 hover:bg-gray-900 cursor-pointer"
+                    onclick="goProfile('${p.npi}')">
+                    <td class="px-3 py-2 text-gray-600 text-xs">${i + 1}</td>
+                    <td class="px-3 py-2 text-sm">${p.npi}</td>
+                    <td class="px-3 py-2 text-sm font-semibold ${scoreColor(p.overall_score)}">
+                        ${scorePct(p.overall_score)}
+                        <span class="text-xs font-normal">${scoreLabel(p.overall_score)}</span>
+                    </td>
+                    <td class="px-3 py-2 text-sm text-gray-400">${p.num_flags}</td>
+                    <td class="px-3 py-2 text-xs text-gray-500">${p.flag_types.join(', ')}</td>
+                    <td class="px-3 py-2">
+                        <button onclick="event.stopPropagation(); goProfile('${p.npi}')"
+                                class="text-xs text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-2 py-0.5 rounded">
+                            Profile →
+                        </button>
+                    </td>
+                </tr>`).join('');
+
+            el.innerHTML = `
+                <p class="text-xs text-gray-500 mb-2 mt-4">
+                    ${data.total} providers above threshold · showing ${data.providers.length} · click any row to profile
+                </p>
+                <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-xs text-gray-500 border-b border-gray-800">
+                            <th class="px-3 py-2">#</th>
+                            <th class="px-3 py-2">NPI</th>
+                            <th class="px-3 py-2">Score</th>
+                            <th class="px-3 py-2">Flags</th>
+                            <th class="px-3 py-2">Types</th>
+                            <th class="px-3 py-2"></th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+                </div>`;
+        }
+
+        // ── Profile ───────────────────────────────────────────────────────────
+
+        function goProfile(npi) {
+            document.getElementById('profile-npi').value = npi;
+            switchTab('profile');
+            runProfile();
+        }
+
+        async function runProfile() {
+            const npi = document.getElementById('profile-npi').value.trim();
+            if (!/^\d{10}$/.test(npi)) {
+                alert('NPI must be exactly 10 digits.');
+                return;
+            }
+            const btn = document.getElementById('profile-btn');
+            const logEl = document.getElementById('profile-log');
+            const resultEl = document.getElementById('profile-result');
+            btn.disabled = true;
+            btn.textContent = 'Building…';
+            logEl.innerHTML = '';
+            logEl.classList.remove('hidden');
+            resultEl.innerHTML = '';
+
+            try {
+                await streamPost(`${API_BASE}/api/profile`, {npi}, logEl, renderProfileResult);
+            } catch (e) {
+                appendLog(logEl, '✗ ' + e.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Generate Dossier';
+            }
+        }
+
+        function renderProfileResult(data) {
+            const el = document.getElementById('profile-result');
+            const flags = data.scan_result?.red_flags || [];
+            const flagRows = flags.map(f => `
+                <tr class="border-t border-gray-800">
+                    <td class="px-3 py-2 text-xs font-medium ${scoreColor(f.severity)}">${scorePct(f.severity)}</td>
+                    <td class="px-3 py-2 text-xs text-gray-400 whitespace-nowrap">${f.flag_type.replace(/_/g, ' ')}</td>
+                    <td class="px-3 py-2 text-xs text-gray-300">${f.description}</td>
+                </tr>`).join('');
+
+            el.innerHTML = `
+                <div class="bg-gray-900 border border-gray-800 rounded p-4 mb-4 flex justify-between items-start gap-4">
+                    <div>
+                        <div class="font-semibold text-white">${data.provider_name || '(name unavailable)'}</div>
+                        <div class="text-xs text-gray-500 font-mono mt-0.5">NPI ${data.npi}</div>
+                        <a href="${DOSSIERS_BASE}/${data.pdf_filename}" target="_blank"
+                           class="inline-flex items-center gap-1 mt-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-3 py-1.5 rounded transition-colors">
+                            ↓ Download PDF Dossier
+                        </a>
+                    </div>
+                    <div class="text-right shrink-0">
+                        <div class="text-3xl font-bold ${scoreColor(data.overall_score)}">${scorePct(data.overall_score)}</div>
+                        <div class="text-xs text-gray-500 mt-0.5">${scoreLabel(data.overall_score)} RISK · ${data.num_flags} flags</div>
+                    </div>
+                </div>
+                ${flagRows ? `
+                <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-xs text-gray-500 border-b border-gray-800">
+                            <th class="px-3 py-2">Severity</th>
+                            <th class="px-3 py-2">Type</th>
+                            <th class="px-3 py-2">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>${flagRows}</tbody>
+                </table>
+                </div>` : '<p class="text-gray-500 text-sm">No flags detected.</p>'}`;
+        }
+
+        // ── Lookup ────────────────────────────────────────────────────────────
+
+        async function runLookup() {
+            const query = document.getElementById('lookup-query').value.trim();
+            const state = document.getElementById('lookup-state').value.trim().toUpperCase() || null;
+            if (!query) return;
+
+            const btn = document.getElementById('lookup-btn');
+            const el  = document.getElementById('lookup-results');
+            btn.disabled = true;
+            btn.textContent = 'Searching…';
+            el.innerHTML = '<p class="text-gray-500 text-sm">Searching NPPES registry…</p>';
+
+            try {
+                const r = await fetch(`${API_BASE}/api/lookup`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query, state}),
+                });
+                const data = await r.json();
+                if (!data.results.length) {
+                    el.innerHTML = '<p class="text-gray-500 text-sm">No providers found.</p>';
+                    return;
+                }
+                const cards = data.results.map(p => `
+                    <div class="bg-gray-900 border border-gray-800 rounded p-3 flex justify-between items-start gap-4">
+                        <div>
+                            <div class="font-medium text-white text-sm">${p.name || '(no name)'}</div>
+                            <div class="text-xs text-gray-500 font-mono mt-0.5">NPI ${p.npi}</div>
+                            ${p.address ? `<div class="text-xs text-gray-400 mt-1">${[p.address, p.city, p.state, p.zip].filter(Boolean).join(', ')}</div>` : ''}
+                            ${p.taxonomy ? `<div class="text-xs text-gray-600 mt-0.5">${p.taxonomy}</div>` : ''}
+                        </div>
+                        <button onclick="goProfile('${p.npi}')"
+                                class="shrink-0 text-xs text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-3 py-1.5 rounded transition-colors whitespace-nowrap">
+                            Profile →
+                        </button>
+                    </div>`).join('');
+                el.innerHTML = `
+                    <p class="text-xs text-gray-500 mb-3">${data.results.length} result(s)</p>
+                    <div class="flex flex-col gap-2">${cards}</div>`;
+            } catch (e) {
+                el.innerHTML = `<p class="text-red-400 text-sm">✗ ${e.message}</p>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Search';
+            }
+        }
+
+        // ── Dossiers ──────────────────────────────────────────────────────────
+
+        async function loadDossiers() {
+            const el = document.getElementById('dossiers-list');
+            el.innerHTML = '<p class="text-gray-500 text-sm">Loading…</p>';
+            try {
+                const r = await fetch(`${API_BASE}/api/dossiers`);
+                const data = await r.json();
+                if (!data.dossiers.length) {
+                    el.innerHTML = '<p class="text-gray-500 text-sm">No dossiers generated yet.</p>';
+                    return;
+                }
+                const rows = data.dossiers.map(d => `
+                    <tr class="border-t border-gray-800 hover:bg-gray-900">
+                        <td class="px-3 py-2 font-mono text-sm">${d.npi}</td>
+                        <td class="px-3 py-2 text-xs text-gray-500">${d.filename}</td>
+                        <td class="px-3 py-2 text-xs text-gray-600">${(d.size_bytes / 1024).toFixed(1)} KB</td>
+                        <td class="px-3 py-2 flex gap-4">
+                            <a href="${DOSSIERS_BASE}/${d.filename}" target="_blank"
+                               class="text-xs text-blue-400 hover:text-blue-300">↓ PDF</a>
+                            <button onclick="goProfile('${d.npi}')"
+                                    class="text-xs text-gray-400 hover:text-gray-200">Re-run →</button>
+                        </td>
+                    </tr>`).join('');
+                el.innerHTML = `
+                    <div class="overflow-x-auto">
+                    <table class="w-full text-left">
+                        <thead>
+                            <tr class="text-xs text-gray-500 border-b border-gray-800">
+                                <th class="px-3 py-2">NPI</th>
+                                <th class="px-3 py-2">Filename</th>
+                                <th class="px-3 py-2">Size</th>
+                                <th class="px-3 py-2">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                    </div>`;
+            } catch (e) {
+                el.innerHTML = `<p class="text-red-400 text-sm">✗ ${e.message}</p>`;
+            }
+        }
+
+        // ── Init ──────────────────────────────────────────────────────────────
+
+        switchTab('scan');
+        checkStatus();
+        setInterval(checkStatus, 30_000);
+    </script>
+</body>
+</html>

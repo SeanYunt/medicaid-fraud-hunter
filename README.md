@@ -47,13 +47,15 @@ Under the False Claims Act, qui tam relators who bring fraud to light can recove
 
 **Web UI (recommended):**
 
+`docker-compose.yml` runs only the FastAPI backend (port 8084). The UI and dossier PDFs are static files that must be served separately on port 8083 — any HTTP file server works (nginx, Apache, `python -m http.server`, etc.). Point it at the `web/` directory for the UI and your dossiers output directory for PDF downloads.
+
 ```bash
 # Place your data file in data/raw/ first (see Data Setup below)
-docker compose up -d
+docker compose up -d        # starts API on :8084
+# separately: serve web/ on :8083
 ```
 
-Then open `http://<server>:8083` — the UI provides Scan, Profile, Lookup, and Dossiers tabs.
-The API runs on port 8084; the UI and dossier PDFs are served from port 8083.
+Then open `http://<server>:8083`.
 
 **CLI with Docker:**
 

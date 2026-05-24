@@ -104,11 +104,18 @@ def profile(npi: str, data_path: str | None):
     """Build an evidence dossier for a specific provider."""
     filepath = Path(data_path) if data_path else find_dataset()
 
-    # Check if we have scan results for this provider
-    scan_result = _load_scan_result(npi)
-
     preprocessed = find_preprocessed()
     monthly_path = preprocessed[0] if preprocessed else None
+    procedure_path = preprocessed[1] if preprocessed else None
+
+    results = scan_all(
+        filepath,
+        threshold=0.0,
+        monthly_path=monthly_path,
+        procedure_path=procedure_path,
+        state_npis={npi},
+    )
+    scan_result = results[0] if results else None
 
     dossier = build_dossier(filepath, npi, scan_result, monthly_path=monthly_path)
 
@@ -195,24 +202,6 @@ def lookup(query: str, state: str | None):
         click.echo(f"  → python cli.py profile {r['npi']}  to generate dossier")
         click.echo()
 
-
-def _load_scan_result(npi: str):
-    """Try to load a previous scan result for this NPI."""
-    scan_csv = OUTPUT_DIR / "scan_results.csv"
-    if not scan_csv.exists():
-        return None
-
-    from data.models import ScanResult
-    with open(scan_csv) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row["npi"] == npi:
-                return ScanResult(
-                    npi=npi,
-                    provider_name="",
-                    overall_score=float(row.get("score", 0)),
-                )
-    return None
 
 
 @cli.command("spark-scan")

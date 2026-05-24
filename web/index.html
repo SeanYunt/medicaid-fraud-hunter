@@ -38,17 +38,17 @@
             <div class="flex gap-4 mb-6 items-end flex-wrap">
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">Threshold</label>
-                    <input id="scan-threshold" type="number" value="0.3" min="0" max="1" step="0.05"
+                    <input id="scan-threshold" type="number" value="0.5" min="0" max="1" step="0.05"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">Top N</label>
-                    <input id="scan-top" type="number" value="50" min="1" max="500"
+                    <input id="scan-top" type="number" value="20" min="1" max="500"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
                     <label class="block text-xs text-gray-500 mb-1">State</label>
-                    <input id="scan-state" type="text" placeholder="WA" maxlength="2"
+                    <input id="scan-state" type="text" value="WY" maxlength="2"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-20 text-sm uppercase focus:outline-none focus:border-blue-500">
                 </div>
                 <button onclick="runScan()" id="scan-btn"

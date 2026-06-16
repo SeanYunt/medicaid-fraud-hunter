@@ -97,8 +97,9 @@ def main():
     catch_all = [r for r in existing_ingress if "hostname" not in r or not r.get("hostname")]
     named     = [r for r in existing_ingress if r.get("hostname")]
 
-    # Strip any existing fraudhunter entries so re-runs are idempotent
-    keep = [r for r in named if not r.get("hostname", "").endswith(f"fraudhunter.{DOMAIN}")]
+    # Strip any existing entries for the hostnames we're about to add so re-runs are idempotent
+    new_hostname_set = {entry["hostname"] for entry in NEW_HOSTNAMES}
+    keep = [r for r in named if r.get("hostname") not in new_hostname_set]
 
     new_ingress = keep + NEW_HOSTNAMES + (catch_all or [{"service": "http_status:404"}])
 

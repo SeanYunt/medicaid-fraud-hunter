@@ -65,6 +65,7 @@
                         class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 px-5 py-2 rounded text-sm font-medium transition-colors">
                     Run Scan
                 </button>
+                <span class="text-xs text-gray-600">⏱ Scans typically take 2–4 minutes</span>
             </div>
             <div id="scan-log" class="hidden mb-4 bg-gray-900 border border-gray-800 rounded p-3 h-44 overflow-y-auto text-xs text-gray-400"></div>
             <div id="scan-results"></div>
@@ -122,6 +123,13 @@
         </div>
 
     </main>
+
+    <footer class="border-t border-gray-800 px-6 py-4 text-center">
+        <a href="https://blackdiamondconsulting.ai/" target="_blank" rel="noopener"
+           class="text-xs text-gray-500 hover:text-gray-300 transition-colors duration-150">
+            blackdiamondconsulting.ai
+        </a>
+    </footer>
 
     <script>
         const _pub = !window.location.port;
@@ -224,10 +232,18 @@
             const logEl = document.getElementById('scan-log');
             const resultsEl = document.getElementById('scan-results');
             btn.disabled = true;
-            btn.textContent = 'Scanning…';
             logEl.innerHTML = '<div class="text-gray-600">Starting scan…</div>';
             logEl.classList.remove('hidden');
             resultsEl.innerHTML = '';
+
+            const startTs = Date.now();
+            const scanTimer = setInterval(() => {
+                const s = Math.floor((Date.now() - startTs) / 1000);
+                const mm = String(Math.floor(s / 60)).padStart(2, '0');
+                const ss = String(s % 60).padStart(2, '0');
+                btn.textContent = `Scanning… ${mm}:${ss}`;
+            }, 1000);
+            btn.textContent = 'Scanning… 00:00';
 
             const body = {
                 threshold: parseFloat(document.getElementById('scan-threshold').value),
@@ -241,6 +257,7 @@
             } catch (e) {
                 appendLog(logEl, '✗ ' + e.message, true);
             } finally {
+                clearInterval(scanTimer);
                 btn.disabled = false;
                 btn.textContent = 'Run Scan';
             }

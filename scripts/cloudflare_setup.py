@@ -3,8 +3,8 @@
 Add fraudhunter public hostnames to the existing Cloudflare Tunnel.
 
 Run this ONCE on any machine (including your laptop) to wire up:
-  fraudhunter.blackdiamondconsulting.ai       -> http://localhost:8083  (web UI)
-  api.fraudhunter.blackdiamondconsulting.ai   -> http://localhost:8084  (API)
+  fraudhunter.blackdiamondconsulting.ai     -> http://10.0.0.45:8083  (web UI)
+  fraudhunterapi.blackdiamondconsulting.ai  -> http://10.0.0.45:8084  (API)
 
 Prerequisites:
   pip install requests
@@ -29,9 +29,11 @@ import urllib.request
 TUNNEL_ID  = "df5e6ba5-50bd-429d-8f95-81869ee60468"
 DOMAIN     = "blackdiamondconsulting.ai"
 
+SERVER_IP = "10.0.0.45"
+
 NEW_HOSTNAMES = [
-    {"hostname": f"fraudhunter.{DOMAIN}",     "service": "http://localhost:8083"},
-    {"hostname": f"api.fraudhunter.{DOMAIN}", "service": "http://localhost:8084"},
+    {"hostname": f"fraudhunter.{DOMAIN}",    "service": f"http://{SERVER_IP}:8083"},
+    {"hostname": f"fraudhunterapi.{DOMAIN}", "service": f"http://{SERVER_IP}:8084"},
 ]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -134,7 +136,7 @@ def main():
 
     print("\n✓ Setup complete.")
     print(f"  UI:  https://fraudhunter.{DOMAIN}")
-    print(f"  API: https://api.fraudhunter.{DOMAIN}")
+    print(f"  API: https://fraudhunterapi.{DOMAIN}")
     print(f"\nRemember to register fraudhunter.{DOMAIN} as a new site in Plausible CE at")
     print(f"  https://analytics.{DOMAIN}")
 

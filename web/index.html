@@ -126,7 +126,7 @@
     <script>
         const _pub = !window.location.port;
         const API_BASE      = _pub
-            ? `${window.location.protocol}//api.${window.location.hostname}`
+            ? `${window.location.protocol}//fraudhunterapi.${window.location.hostname.replace(/^fraudhunter\./, '')}`
             : `http://${window.location.hostname}:8084`;
         const DOSSIERS_BASE = _pub
             ? `/dossiers`

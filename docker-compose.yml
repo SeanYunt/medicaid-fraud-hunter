@@ -1,4 +1,13 @@
 services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8083:80"
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - /mnt/storage/dossiers:/usr/share/nginx/html/dossiers:ro
+    restart: unless-stopped
+
   api:
     build:
       context: .

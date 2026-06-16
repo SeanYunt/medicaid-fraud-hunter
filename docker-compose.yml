@@ -11,4 +11,8 @@ services:
       - /mnt/storage/dossiers:/app/output/dossiers
     environment:
       - DOSSIERS_DIR=/app/output/dossiers
+      # Access control: N scan+profile ops per IP per 24h (0 = unlimited)
+      - SCAN_QUOTA=10
+      # Comma-separated IPs that bypass the quota — add your home IP here
+      - QUOTA_ALLOWLIST=10.0.0.45
     restart: unless-stopped

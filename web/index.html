@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Medicaid Fraud Hunter</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      window.plausible=window.plausible||function(){(window.plausible.q=window.plausible.q||[]).push(arguments)};
+      if (!window.location.port) {
+        var _ps=document.createElement('script');
+        _ps.defer=true;
+        _ps.setAttribute('data-domain','fraudhunter.blackdiamondconsulting.ai');
+        _ps.src='https://analytics.blackdiamondconsulting.ai/js/script.js';
+        document.head.appendChild(_ps);
+      }
+    </script>
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen font-mono">
 
@@ -114,9 +124,13 @@
     </main>
 
     <script>
-        // API on port 8084, file server (dossiers) on 8083 — same hostname as this page
-        const API_BASE      = `http://${window.location.hostname}:8084`;
-        const DOSSIERS_BASE = `http://${window.location.hostname}:8083/dossiers`;
+        const _pub = !window.location.port;
+        const API_BASE      = _pub
+            ? `${window.location.protocol}//api.${window.location.hostname}`
+            : `http://${window.location.hostname}:8084`;
+        const DOSSIERS_BASE = _pub
+            ? `/dossiers`
+            : `http://${window.location.hostname}:8083/dossiers`;
 
         // ── Tab switching ──────────────────────────────────────────────────────
 
@@ -157,6 +171,11 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(body),
             });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({}));
+                appendLog(logEl, '✗ ' + (err.detail || `HTTP ${r.status}`), true);
+                return;
+            }
             const reader = r.body.getReader();
             const dec = new TextDecoder();
             let buf = '';
@@ -218,6 +237,7 @@
 
             try {
                 await streamPost(`${API_BASE}/api/scan`, body, logEl, renderScanResults);
+                plausible('Scan Run', {props: {state: body.state || 'all'}});
             } catch (e) {
                 appendLog(logEl, '✗ ' + e.message, true);
             } finally {
@@ -332,6 +352,7 @@
                         <div>
                             <div class="text-xs text-gray-500 font-mono">NPI ${data.npi}</div>
                             <a href="${DOSSIERS_BASE}/${data.pdf_filename}" target="_blank"
+                               onclick="plausible('Dossier Download')"
                                class="inline-flex items-center gap-1 mt-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-3 py-1.5 rounded transition-colors">
                                 ↓ Download PDF Dossier
                             </a>
@@ -340,6 +361,7 @@
                             Cached · <button onclick="runProfile(true)" class="text-blue-400 hover:text-blue-300 underline">force re-run</button>
                         </div>
                     </div>`;
+                plausible('Profile View', {props: {cached: 'true'}});
                 const btn = document.getElementById('profile-btn');
                 btn.disabled = true;
                 btn.textContent = 'Profile Completed';
@@ -360,6 +382,7 @@
                         <div class="font-semibold text-white">${data.provider_name || '(name unavailable)'}</div>
                         <div class="text-xs text-gray-500 font-mono mt-0.5">NPI ${data.npi}</div>
                         <a href="${DOSSIERS_BASE}/${data.pdf_filename}" target="_blank"
+                           onclick="plausible('Dossier Download')"
                            class="inline-flex items-center gap-1 mt-3 text-sm text-blue-400 hover:text-blue-300 border border-blue-900 hover:border-blue-600 px-3 py-1.5 rounded transition-colors">
                             ↓ Download PDF Dossier
                         </a>
@@ -382,6 +405,7 @@
                     <tbody>${flagRows}</tbody>
                 </table>
                 </div>` : '<p class="text-gray-500 text-sm">No flags detected.</p>'}`;
+            plausible('Profile Built', {props: {score: scorePct(data.overall_score)}});
             const btn = document.getElementById('profile-btn');
             btn.disabled = true;
             btn.textContent = 'Profile Completed';
@@ -401,6 +425,7 @@
             el.innerHTML = '<p class="text-gray-500 text-sm">Searching NPPES registry…</p>';
 
             try {
+                plausible('Lookup Search');
                 const r = await fetch(`${API_BASE}/api/lookup`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -454,6 +479,7 @@
                         <td class="px-3 py-2 text-xs text-gray-600">${(d.size_bytes / 1024).toFixed(1)} KB</td>
                         <td class="px-3 py-2 flex gap-4">
                             <a href="${DOSSIERS_BASE}/${d.filename}" target="_blank"
+                               onclick="plausible('Dossier Download')"
                                class="text-xs text-blue-400 hover:text-blue-300">↓ PDF</a>
                             <button onclick="goProfile('${d.npi}', true)"
                                     class="text-xs text-gray-400 hover:text-gray-200">Re-run →</button>

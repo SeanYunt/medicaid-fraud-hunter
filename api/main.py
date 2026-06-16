@@ -6,10 +6,12 @@ Scan and profile stream progress via Server-Sent Events (SSE).
 
 import json
 import os
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Generator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -24,6 +26,37 @@ from scanner.anomalies import scan_all
 from .stream import stream_operation
 
 DOSSIERS_DIR = Path(os.environ.get("DOSSIERS_DIR", "/app/output/dossiers"))
+
+# ---------------------------------------------------------------------------
+# Optional IP-based quota (set SCAN_QUOTA=N to allow N ops/IP/24h; 0 = off)
+# QUOTA_ALLOWLIST is a comma-separated list of IPs that bypass the limit.
+# ---------------------------------------------------------------------------
+_QUOTA_LIMIT = int(os.environ.get("SCAN_QUOTA", "0"))
+_QUOTA_ALLOWLIST: set[str] = {
+    ip.strip() for ip in os.environ.get("QUOTA_ALLOWLIST", "").split(",") if ip.strip()
+}
+_quota_log: dict[str, list[float]] = defaultdict(list)
+
+
+def _enforce_quota(request: Request) -> None:
+    """Raise 429 if IP has exhausted its daily quota. No-op when SCAN_QUOTA=0."""
+    if _QUOTA_LIMIT <= 0:
+        return
+    ip = (request.client.host if request.client else "unknown")
+    if ip in _QUOTA_ALLOWLIST:
+        return
+    now = time.time()
+    _quota_log[ip] = [t for t in _quota_log[ip] if now - t < 86_400]
+    if len(_quota_log[ip]) >= _QUOTA_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Free access limit of {_QUOTA_LIMIT} scan(s) per 24 hours reached. "
+                "Contact sean@blackdiamondconsulting.ai for continued access."
+            ),
+        )
+    _quota_log[ip].append(now)
+
 
 app = FastAPI(title="Medicaid Fraud Hunter", version="1.0.0")
 
@@ -98,8 +131,9 @@ def status():
 
 
 @app.post("/api/scan")
-def scan(req: ScanRequest):
+def scan(req: ScanRequest, request: Request):
     """Scan for suspicious providers. Streams SSE progress, then results."""
+    _enforce_quota(request)
 
     def run() -> dict:
         filepath = find_dataset()
@@ -150,8 +184,9 @@ def last_scan():
 
 
 @app.post("/api/profile")
-def profile(req: ProfileRequest):
+def profile(req: ProfileRequest, request: Request):
     """Build a dossier for a specific NPI. Streams SSE progress, then PDF info."""
+    _enforce_quota(request)
 
     def run() -> dict:
         if not req.force:

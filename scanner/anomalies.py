@@ -17,6 +17,30 @@ RATE_CV_THRESHOLD = 0.08     # Per-claim rate coefficient of variation < 8%
 CONSISTENCY_MIN_MONTHS = 3   # Minimum months of data to evaluate consistency
 MIN_TOTAL_PAID = 100_000  # Ignore providers below this total — too small for viable qui tam case
 
+# Per-diem and high-frequency community support codes used almost exclusively by
+# multi-staff organisational providers (community behavioral health, supported
+# housing, day habilitation programs).  When one of these is the dominant billing
+# code, the 1,500 claims/month solo-practitioner threshold produces systematic
+# false positives and must not be applied.
+ORG_BILLING_CODES = {
+    "H0038",  # Community prep services, per 15 min
+    "H0039",  # Assertive community treatment, per diem
+    "H0040",  # Assertive community treatment, per month
+    "H0043",  # Supported housing (ACT per diem)
+    "H2015",  # Comprehensive community support, per 15 min
+    "H2016",  # Comprehensive community support, per diem
+    "H2017",  # Psychosocial rehabilitation services, per 15 min
+    "H2018",  # Psychosocial rehabilitation services, per diem
+    "H2019",  # Therapeutic behavioral services, per 15 min
+    "H2020",  # Therapeutic behavioral services, per diem
+    "T1016",  # Case management, per 15 min
+    "T1017",  # Targeted case management, per 15 min
+    "T1019",  # Personal care services, per 15 min
+    "T1020",  # Personal care services, per diem
+    "T2020",  # Day habilitation, waiver, per 15 min
+    "T2021",  # Day habilitation, waiver, per diem
+}
+
 # NOS/miscellaneous HCPCS codes — vague codes that obscure what was actually billed
 NOS_CODES = {
     "B9998",  # Enteral supplies, not otherwise classified
@@ -113,12 +137,28 @@ def scan_all(
         act_monthly = monthly_df
 
     num_detectors = 4 if code_df is None else 6
+
+    # Attempt to load NPPES entity types so the volume detector can skip
+    # Type 2 (organisational) providers.  The NPPES zip is optional — if absent
+    # the code-based heuristic (ORG_BILLING_CODES) still catches the most common
+    # organisational billing patterns.
+    org_npis: set[str] | None = None
+    try:
+        from data.nppes import find_nppes_zip, load_organization_npis
+        nppes_zip = find_nppes_zip()
+        t0 = time.time()
+        click.echo("Loading NPPES entity types for volume detector...")
+        org_npis = load_organization_npis(nppes_zip)
+        click.echo(f"  {len(org_npis):,} organisational NPIs identified ({time.time() - t0:.1f}s)")
+    except FileNotFoundError:
+        pass  # NPPES zip absent — code-based heuristic still applies
+
     click.echo("Running anomaly detection...")
 
     # --- Volume impossibility (fixed threshold — safe on filtered data) ---
     t0 = time.time()
     click.echo(f"  [1/{num_detectors}] Volume impossibility detector...")
-    volume_flags = _detect_volume_impossibility(act_monthly)
+    volume_flags = _detect_volume_impossibility(act_monthly, org_npis=org_npis, code_df=code_df)
     click.echo(f"  done ({time.time() - t0:.1f}s, {len(volume_flags):,} flagged)")
 
     # --- Revenue outliers (national baseline, state-filtered output) ---
@@ -194,9 +234,44 @@ def scan_all(
     return results
 
 
-def _detect_volume_impossibility(monthly_df: pd.DataFrame) -> dict[str, list[RedFlag]]:
-    """Flag providers with impossibly high claim counts in a single month."""
-    flagged = monthly_df[monthly_df["total_claims"] > MAX_CLAIMS_PER_MONTH]
+def _detect_volume_impossibility(
+    monthly_df: pd.DataFrame,
+    org_npis: set[str] | None = None,
+    code_df: pd.DataFrame | None = None,
+) -> dict[str, list[RedFlag]]:
+    """Flag providers with impossibly high claim counts in a single month.
+
+    Skips organisational providers identified by either:
+    - NPPES entity type 2 (when org_npis is provided), or
+    - A dominant billing code from ORG_BILLING_CODES (when code_df is provided).
+
+    The 1,500/month threshold is calibrated for solo practitioners; applying it
+    to multi-staff organisations produces systematic false positives.
+    """
+    excluded: set[str] = set(org_npis) if org_npis else set()
+
+    if code_df is not None and not code_df.empty:
+        # Find each provider's highest-volume procedure code across all months.
+        # If that code is in ORG_BILLING_CODES the provider bills like a multi-staff
+        # organisation and the solo-practitioner volume threshold doesn't apply.
+        code_totals = (
+            code_df.groupby(["npi", "procedure_code"], as_index=False)["total_claims"]
+            .sum()
+        )
+        code_totals["npi"] = code_totals["npi"].astype(str)
+        top_codes = (
+            code_totals.sort_values("total_claims", ascending=False)
+            .drop_duplicates(subset="npi", keep="first")
+            .set_index("npi")["procedure_code"]
+        )
+        excluded |= set(top_codes[top_codes.isin(ORG_BILLING_CODES)].index)
+
+    if excluded:
+        scan_df = monthly_df[~monthly_df["npi"].astype(str).isin(excluded)]
+    else:
+        scan_df = monthly_df
+
+    flagged = scan_df[scan_df["total_claims"] > MAX_CLAIMS_PER_MONTH]
 
     flags: dict[str, list[RedFlag]] = {}
     for _, row in flagged.iterrows():

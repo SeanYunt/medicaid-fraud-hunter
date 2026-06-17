@@ -32,6 +32,40 @@ def test_volume_impossibility_skips_clean_provider(monthly_df: pd.DataFrame):
     assert CLEAN_NPI not in flags
 
 
+def test_volume_impossibility_skips_nppes_org_npis(monthly_df: pd.DataFrame):
+    """NPIs in org_npis are excluded even when they exceed the volume threshold."""
+    # VOLUME_NPI is flagged without the exclusion set
+    assert VOLUME_NPI in _detect_volume_impossibility(monthly_df)
+    # Passing it as an org NPI suppresses the flag
+    flags = _detect_volume_impossibility(monthly_df, org_npis={VOLUME_NPI})
+    assert VOLUME_NPI not in flags
+
+
+def test_volume_impossibility_skips_org_billing_code_providers(monthly_df: pd.DataFrame):
+    """A provider whose top code is in ORG_BILLING_CODES is excluded via code heuristic."""
+    # H0043 (ACT per diem) is an org billing code — dominates VOLUME_NPI here
+    org_code_df = pd.DataFrame([
+        {"npi": VOLUME_NPI, "procedure_code": "H0043", "service_month": "2024-07-01",
+         "total_claims": 6000, "total_paid": 120_000.0},
+        {"npi": VOLUME_NPI, "procedure_code": "99214", "service_month": "2024-07-01",
+         "total_claims": 100, "total_paid": 10_000.0},
+    ])
+    flags = _detect_volume_impossibility(monthly_df, code_df=org_code_df)
+    assert VOLUME_NPI not in flags
+
+
+def test_volume_impossibility_flags_when_org_code_not_dominant(monthly_df: pd.DataFrame):
+    """Provider is still flagged when an org code is present but not the top code."""
+    code_df = pd.DataFrame([
+        {"npi": VOLUME_NPI, "procedure_code": "99214", "service_month": "2024-07-01",
+         "total_claims": 5000, "total_paid": 500_000.0},
+        {"npi": VOLUME_NPI, "procedure_code": "H0043", "service_month": "2024-07-01",
+         "total_claims": 50, "total_paid": 1_000.0},
+    ])
+    flags = _detect_volume_impossibility(monthly_df, code_df=code_df)
+    assert VOLUME_NPI in flags
+
+
 def test_revenue_outlier_flags_revenue_provider(monthly_df: pd.DataFrame):
     flags = _detect_revenue_outliers(monthly_df)
     assert REVENUE_NPI in flags

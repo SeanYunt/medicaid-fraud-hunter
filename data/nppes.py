@@ -28,6 +28,7 @@ _TAXONOMY_COL = "Healthcare Provider Primary Taxonomy Code"
 _MAIL_STATE_COL = "Provider Business Mailing Address State Name"
 
 _STATE_COLS = {_NPI_COL, _STATE_COL, _MAIL_STATE_COL}
+_ENTITY_COLS = {_NPI_COL, _ENTITY_COL}
 
 _LOOKUP_COLS = {
     _NPI_COL, _ENTITY_COL, _ORG_NAME_COL, _LAST_NAME_COL,
@@ -81,6 +82,35 @@ def _open_main_csv(zip_path: Path) -> tuple[zipfile.ZipFile, io.IOBase]:
     # Pick the largest CSV — most likely the main data file
     largest = max(candidates, key=lambda n: zf.getinfo(n).file_size)
     return zf, zf.open(largest)
+
+
+def load_organization_npis(zip_path: Path) -> set[str]:
+    """Return NPIs whose NPPES entity type is 2 (Organization).
+
+    Type 1 = Individual practitioner, Type 2 = Organization.
+    The volume impossibility detector uses this to skip multi-staff providers
+    for which the per-solo-practitioner claim threshold is meaningless.
+    """
+    org_npis: set[str] = set()
+    zf, csv_stream = _open_main_csv(zip_path)
+    try:
+        for chunk in pd.read_csv(
+            csv_stream,
+            usecols=lambda c: c in _ENTITY_COLS,
+            dtype=str,
+            chunksize=200_000,
+            low_memory=False,
+        ):
+            if _NPI_COL not in chunk.columns or _ENTITY_COL not in chunk.columns:
+                continue
+            chunk = chunk.copy()
+            chunk[_NPI_COL] = chunk[_NPI_COL].fillna("").str.strip()
+            chunk[_ENTITY_COL] = chunk[_ENTITY_COL].fillna("").str.strip()
+            orgs = chunk.loc[chunk[_ENTITY_COL] == "2", _NPI_COL]
+            org_npis.update(orgs[orgs != ""].tolist())
+    finally:
+        zf.close()
+    return org_npis
 
 
 def load_npi_state_map(zip_path: Path) -> dict[str, str]:

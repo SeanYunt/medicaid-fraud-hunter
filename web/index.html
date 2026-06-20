@@ -47,17 +47,17 @@
         <div id="panel-scan" class="panel">
             <div class="flex gap-4 mb-6 items-end flex-wrap">
                 <div>
-                    <label class="block text-xs text-gray-500 mb-1">Threshold</label>
+                    <label for="scan-threshold" class="block text-xs text-gray-500 mb-1">Threshold</label>
                     <input id="scan-threshold" type="number" value="0.5" min="0" max="1" step="0.05"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
-                    <label class="block text-xs text-gray-500 mb-1">Top N</label>
+                    <label for="scan-top" class="block text-xs text-gray-500 mb-1">Top N</label>
                     <input id="scan-top" type="number" value="20" min="1" max="500"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-24 text-sm focus:outline-none focus:border-blue-500">
                 </div>
                 <div>
-                    <label class="block text-xs text-gray-500 mb-1">State</label>
+                    <label for="scan-state" class="block text-xs text-gray-500 mb-1">State</label>
                     <input id="scan-state" type="text" value="WY" maxlength="2"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-20 text-sm uppercase focus:outline-none focus:border-blue-500">
                 </div>
@@ -75,7 +75,7 @@
         <div id="panel-profile" class="panel hidden">
             <div class="flex gap-4 mb-6 items-end">
                 <div>
-                    <label class="block text-xs text-gray-500 mb-1">NPI</label>
+                    <label for="profile-npi" class="block text-xs text-gray-500 mb-1">NPI</label>
                     <input id="profile-npi" type="text" value="1598971855" maxlength="10"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-44 text-sm focus:outline-none focus:border-blue-500"
                            onkeydown="if(event.key==='Enter') runProfile()"
@@ -94,13 +94,13 @@
         <div id="panel-lookup" class="panel hidden">
             <div class="flex gap-4 mb-6 items-end flex-wrap">
                 <div class="flex-1 min-w-64">
-                    <label class="block text-xs text-gray-500 mb-1">Name or NPI</label>
+                    <label for="lookup-query" class="block text-xs text-gray-500 mb-1">Name or NPI</label>
                     <input id="lookup-query" type="text" placeholder="Provider name or 10-digit NPI"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-full text-sm focus:outline-none focus:border-blue-500"
                            onkeydown="if(event.key==='Enter') runLookup()">
                 </div>
                 <div>
-                    <label class="block text-xs text-gray-500 mb-1">State</label>
+                    <label for="lookup-state" class="block text-xs text-gray-500 mb-1">State</label>
                     <input id="lookup-state" type="text" placeholder="WA" maxlength="2"
                            class="bg-gray-900 border border-gray-700 rounded px-3 py-2 w-20 text-sm uppercase focus:outline-none focus:border-blue-500"
                            onkeydown="if(event.key==='Enter') runLookup()">
